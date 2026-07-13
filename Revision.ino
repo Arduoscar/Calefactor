@@ -57,7 +57,7 @@ LiquidCrystal_I2C lcd(0x27, 16, 2); // Pantalla LCD con dirección I2C 0x27, 16 
 int setpoint = 25;                 // Valor de temperatura objetivo (setpoint)
 int modo = 1;                      // Modo de operación (1=AUTO1, 2=AUTO2, 3=PRECAUCIÓN)
 int estadoReles = 0;               // Almacena estado anterior de relés para EEPROM
-int estadoRele3 = 0;               // Estado del relé manual (0=OFF, 1=ON) - NUEVO
+int estadoRele3Int = 0;            // Estado del relé 3 (0=OFF, 1=ON) - NUEVO - variable INT
 
 // =====================================================================
 // GRUPO: DIRECCIONES DE ALMACENAMIENTO EN EEPROM
@@ -138,7 +138,7 @@ void setup() {
   if (eSetpoint >= 0 && eSetpoint <= 100) setpoint = eSetpoint;  // Validar setpoint (0-100°C)
   if (eModo >= 1 && eModo <= 3) modo = eModo;                    // Validar modo (1, 2 o 3)
   if (eEstado >= 0 && eEstado <= 3) estadoReles = eEstado;       // Validar estado relés
-  if (eRele3 >= 0 && eRele3 <= 1) estadoRele3 = eRele3;          // Validar relay3 (0 o 1) - NUEVO
+  if (eRele3 >= 0 && eRele3 <= 1) estadoRele3Int = eRele3;       // Validar relay3 (0 o 1) - NUEVO
 
   // ---- SECCIÓN: Configuración de red WiFi ----
   // Asignar IP fija antes de conectar
@@ -341,7 +341,7 @@ void loop() {
   // ---- SECCIÓN: Lectura del estado actual de los relés para mostrar en web ----
   String estadoRele1 = digitalRead(RELAY1_PIN) ? "ON" : "OFF";  // RELAY1: ON o OFF
   String estadoRele2 = digitalRead(RELAY2_PIN) ? "ON" : "OFF";  // RELAY2: ON o OFF
-  String estadoRele3 = digitalRead(RELAY3_PIN) ? "ON" : "OFF";  // RELAY3: ON o OFF - NUEVO
+  String estadoRele3String = digitalRead(RELAY3_PIN) ? "ON" : "OFF";  // RELAY3: ON o OFF - NUEVO (variable String)
 
   // =====================================================================
   // GRUPO: ACTUALIZACIÓN DE PANTALLA LCD CON ANTI-PARPADEO
@@ -429,7 +429,7 @@ void loop() {
         json += "\"modo\":" + String(modo) + ",";                 // Modo actual
         json += "\"rele1\":\"" + estadoRele1 + "\",";             // Estado RELAY1
         json += "\"rele2\":\"" + estadoRele2 + "\",";             // Estado RELAY2
-        json += "\"rele3\":\"" + estadoRele3 + "\"";              // Estado RELAY3 - NUEVO
+        json += "\"rele3\":\"" + estadoRele3String + "\"";        // Estado RELAY3 - NUEVO
         json += "}";                                      // Cerrar objeto JSON
 
         // ---- Envío de respuesta HTTP con JSON ----
@@ -476,8 +476,8 @@ void loop() {
       // =====================================================================
       if (req.indexOf("GET /rele3on") != -1) {
         digitalWrite(RELAY3_PIN, HIGH);                   // Establecer RELAY3 a HIGH (ON)
-        estadoRele3 = 1;                                  // Guardar estado en variable
-        EEPROM.writeInt(addrRele3, estadoRele3);          // Guardar en EEPROM
+        estadoRele3Int = 1;                               // Guardar estado en variable INT
+        EEPROM.writeInt(addrRele3, estadoRele3Int);       // Guardar en EEPROM
         EEPROM.commit();                                  // Confirmar escritura
         client.println("HTTP/1.1 200 OK");                // Código de éxito
         client.println("Content-Type: text/plain");       // Tipo de contenido texto
@@ -492,8 +492,8 @@ void loop() {
       // =====================================================================
       if (req.indexOf("GET /rele3off") != -1) {
         digitalWrite(RELAY3_PIN, LOW);                    // Establecer RELAY3 a LOW (OFF)
-        estadoRele3 = 0;                                  // Guardar estado en variable
-        EEPROM.writeInt(addrRele3, estadoRele3);          // Guardar en EEPROM
+        estadoRele3Int = 0;                               // Guardar estado en variable INT
+        EEPROM.writeInt(addrRele3, estadoRele3Int);       // Guardar en EEPROM
         EEPROM.commit();                                  // Confirmar escritura
         client.println("HTTP/1.1 200 OK");                // Código de éxito
         client.println("Content-Type: text/plain");       // Tipo de contenido texto
