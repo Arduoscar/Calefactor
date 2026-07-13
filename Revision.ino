@@ -70,6 +70,7 @@ bool relay4ContadorActivo = false;  // Flag: true si el contador de 5 minutos es
 unsigned long relay4Timer = 0;      // Timestamp del inicio del temporizador de 5 minutos
 const unsigned long TIMER_5MIN = 300000; // 5 minutos en milisegundos (300000 ms)
 bool setpointAlcanzado = false;    // Flag: true si tempKY alcanzó setpoint al menos una vez
+bool relay4ManualOverride = false; // true cuando GPIO 25 está en modo manual temporal
 
 // =====================================================================
 // GRUPO: DIRECCIONES DE ALMACENAMIENTO EN EEPROM
@@ -153,7 +154,10 @@ void setup() {
   if (eModo >= 1 && eModo <= 3) modo = eModo;                    // Validar modo (1, 2 o 3)
   if (eEstado >= 0 && eEstado <= 3) estadoReles = eEstado;       // Validar estado relés
   if (eRele3 >= 0 && eRele3 <= 1) estadoRele3Int = eRele3;       // Validar relay3 (0 o 1)
-  if (eRele4 >= 0 && eRele4 <= 1) estadoRele4Int = eRele4;       // Validar relay4 (0 o 1)
+  if (eRele4 >= 0 && eRele4 <= 1) {
+    estadoRele4Int = eRele4;                            // Validar relay4 (0 o 1)
+    relay4ManualOverride = true;                        // Restaurar modo manual guardado para GPIO 25
+  }
 
   // ---- SECCIÓN: Configuración de red WiFi ----
   // Asignar IP fija antes de conectar
@@ -296,6 +300,7 @@ void loop() {
     if (command == 0x44) {
       digitalWrite(RELAY4_PIN, HIGH);                      // Encender GPIO 25 inmediatamente
       estadoRele4Int = 1;                                  // Actualizar estado entero para EEPROM
+      relay4ManualOverride = true;                         // Activar anulación manual desde control IR
       relay4ContadorActivo = false;                        // Reiniciar contador al forzar encendido
       EEPROM.writeInt(addrRele4, estadoRele4Int);          // Guardar estado manual de GPIO 25
       EEPROM.commit();                                     // Confirmar escritura en EEPROM
@@ -305,6 +310,7 @@ void loop() {
     if (command == 0x43) {
       digitalWrite(RELAY4_PIN, LOW);                       // Apagar GPIO 25 inmediatamente
       estadoRele4Int = 0;                                  // Actualizar estado entero para EEPROM
+      relay4ManualOverride = true;                         // Activar anulación manual desde control IR
       relay4ContadorActivo = false;                        // Reiniciar contador al forzar apagado
       EEPROM.writeInt(addrRele4, estadoRele4Int);          // Guardar estado manual de GPIO 25
       EEPROM.commit();                                     // Confirmar escritura en EEPROM
@@ -399,6 +405,10 @@ void loop() {
   if (rele1o2High) {
     digitalWrite(RELAY4_PIN, HIGH);                       // Activación inmediata por demanda de RELAY1/2
     relay4ContadorActivo = false;                         // Detener/reiniciar contador al volver a HIGH
+    relay4ManualOverride = false;                         // Volver a automático cuando hay demanda real
+  } else if (relay4ManualOverride) {
+    digitalWrite(RELAY4_PIN, estadoRele4Int ? HIGH : LOW); // Mantener estado manual hasta nueva demanda
+    relay4ContadorActivo = false;                         // En manual no se ejecuta el contador automático
   } else {
     if (setpointAlcanzado) {
       if (!relay4ContadorActivo) {
@@ -566,11 +576,19 @@ void loop() {
       }
 
       // =====================================================================
-      // ENDPOINT: /gpio25on (principal) y /rele3on (legado compatible)
+      // ENDPOINTS:
+      // - /gpio25on: control manual dedicado para GPIO 25
+      // - /rele3on : legado, mantiene control de RELAY3 y además enciende GPIO 25 por compatibilidad
       // =====================================================================
       if (req.indexOf("GET /gpio25on") != -1 || req.indexOf("GET /rele3on") != -1) {
+        if (req.indexOf("GET /rele3on") != -1) {              // Compatibilidad con clientes previos de RELAY3
+          digitalWrite(RELAY3_PIN, HIGH);                     // Mantener comportamiento legado en pin 19
+          estadoRele3Int = 1;                                 // Actualizar estado RELAY3
+          EEPROM.writeInt(addrRele3, estadoRele3Int);         // Persistir estado legado de RELAY3
+        }
         digitalWrite(RELAY4_PIN, HIGH);                   // Establecer GPIO 25 a HIGH (ON)
         estadoRele4Int = 1;                               // Guardar estado en variable INT
+        relay4ManualOverride = true;                      // Activar anulación manual de la lógica automática
         relay4ContadorActivo = false;                     // Detener contador por activación manual
         EEPROM.writeInt(addrRele4, estadoRele4Int);       // Guardar en EEPROM
         EEPROM.commit();                                  // Confirmar escritura
@@ -583,11 +601,19 @@ void loop() {
       }
 
       // =====================================================================
-      // ENDPOINT: /gpio25off (principal) y /rele3off (legado compatible)
+      // ENDPOINTS:
+      // - /gpio25off: control manual dedicado para GPIO 25
+      // - /rele3off : legado, mantiene control de RELAY3 y además apaga GPIO 25 por compatibilidad
       // =====================================================================
       if (req.indexOf("GET /gpio25off") != -1 || req.indexOf("GET /rele3off") != -1) {
+        if (req.indexOf("GET /rele3off") != -1) {             // Compatibilidad con clientes previos de RELAY3
+          digitalWrite(RELAY3_PIN, LOW);                      // Mantener comportamiento legado en pin 19
+          estadoRele3Int = 0;                                 // Actualizar estado RELAY3
+          EEPROM.writeInt(addrRele3, estadoRele3Int);         // Persistir estado legado de RELAY3
+        }
         digitalWrite(RELAY4_PIN, LOW);                    // Establecer GPIO 25 a LOW (OFF)
         estadoRele4Int = 0;                               // Guardar estado en variable INT
+        relay4ManualOverride = true;                      // Activar anulación manual de la lógica automática
         relay4ContadorActivo = false;                     // Detener contador por apagado manual
         EEPROM.writeInt(addrRele4, estadoRele4Int);       // Guardar en EEPROM
         EEPROM.commit();                                  // Confirmar escritura
@@ -621,7 +647,7 @@ void loop() {
       pagina += "document.getElementById('r1').innerHTML = d.rele1;";              // Estado RELAY1
       pagina += "document.getElementById('r2').innerHTML = d.rele2;";              // Estado RELAY2
       pagina += "document.getElementById('r4').innerHTML = d.rele4;";              // Estado RELAY4 - NUEVO
-      pagina += "document.getElementById('r4manual').innerHTML = d.rele4;";        // Estado GPIO 25 en control manual
+      pagina += "document.getElementById('gpio25estado').innerHTML = d.rele4;";     // Estado actual GPIO 25
       pagina += "document.getElementById('timer').innerHTML = d.tiempoRestante + ' seg';"; // Timer - NUEVO
 
       // Mostrar alerta si está en MODO 3 (PRECAUCIÓN)
@@ -706,8 +732,8 @@ void loop() {
       pagina += "<div>Estado: <span id='r2'></span></div></div>";
 
       // ---- SECCIÓN: CONTROL MANUAL GPIO 25 ----
-      pagina += "<div class='card'><h2>RELÉ GPIO 25 (CONTROL MANUAL ON/OFF)</h2>";
-      pagina += "<div>Estado actual GPIO 25: <span id='r4manual'></span></div>";
+      pagina += "<div class='card'><h2>RELÉ GPIO 25 (CONTROL MANUAL - ANULA AUTOMÁTICO)</h2>";
+      pagina += "<div>Estado actual GPIO 25: <span id='gpio25estado'></span></div>";
       pagina += "<div class='button-group'>";
       pagina += "<button id='btnRele25On' onclick='gpio25On()' style='background:#27ae60;'>🟢 ENCENDER</button>";
       pagina += "<button id='btnRele25Off' onclick='gpio25Off()' style='background:#e74c3c;'>🔴 APAGAR</button>";
