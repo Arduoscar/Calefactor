@@ -190,7 +190,7 @@ void setup() {
   digitalWrite(RELAY1_PIN, LOW);                 // Apagar relé 1
   digitalWrite(RELAY2_PIN, LOW);                 // Apagar relé 2
   digitalWrite(RELAY3_PIN, LOW);                 // Apagar relé 3
-  digitalWrite(RELAY4_PIN, estadoRele4Int ? HIGH : LOW); // Restaurar relé 4 guardado
+  digitalWrite(RELAY4_PIN, estadoRele4Int ? HIGH : LOW); // Restaurar estado guardado; luego la lógica automática lo ajusta
 
   // ---- SECCIÓN: Configuración del receptor infrarrojo ----
   IrReceiver.begin(IR_PIN, ENABLE_LED_FEEDBACK); // Inicializar IR con feedback LED
@@ -389,6 +389,7 @@ void loop() {
   if (setpointAlcanzado && tempKY <= setpoint - HISTERESIS) {
     setpointAlcanzado = false;                            // Liberar latch cuando cae por histéresis
     relay4ContadorActivo = false;                         // Cancelar contador hasta nuevo setpoint
+    // El estado final de RELAY4 se recalcula inmediatamente en la lógica principal de abajo
   }
 
   // ---- SECCIÓN: Lectura de condición maestra (RELAY1/2) ----
@@ -421,14 +422,6 @@ void loop() {
   String estadoRele2 = digitalRead(RELAY2_PIN) ? "ON" : "OFF";  // RELAY2: ON o OFF
   String estadoRele3String = digitalRead(RELAY3_PIN) ? "ON" : "OFF";  // RELAY3: ON o OFF
   String estadoRele4 = digitalRead(RELAY4_PIN) ? "ON" : "OFF";  // RELAY4: ON o OFF - NUEVO
-
-  // ---- SECCIÓN: Persistencia del estado real de GPIO 25 en EEPROM ----
-  int estadoRele4ActualInt = digitalRead(RELAY4_PIN) ? 1 : 0;   // Convertir estado digital a entero
-  if (estadoRele4ActualInt != estadoRele4Int) {
-    estadoRele4Int = estadoRele4ActualInt;                       // Actualizar estado interno
-    EEPROM.writeInt(addrRele4, estadoRele4Int);                  // Persistir cambio en EEPROM
-    EEPROM.commit();                                             // Confirmar escritura solo cuando cambió
-  }
 
   // ---- SECCIÓN: Cálculo del tiempo restante del temporizador para mostrar en web - NUEVO ----
   unsigned long tiempoRestante = 0;                       // Tiempo restante en segundos
@@ -573,9 +566,9 @@ void loop() {
       }
 
       // =====================================================================
-      // ENDPOINT: /rele3on (Encender GPIO 25 manualmente, nombre legado por compatibilidad)
+      // ENDPOINT: /gpio25on (principal) y /rele3on (legado compatible)
       // =====================================================================
-      if (req.indexOf("GET /rele3on") != -1) {
+      if (req.indexOf("GET /gpio25on") != -1 || req.indexOf("GET /rele3on") != -1) {
         digitalWrite(RELAY4_PIN, HIGH);                   // Establecer GPIO 25 a HIGH (ON)
         estadoRele4Int = 1;                               // Guardar estado en variable INT
         relay4ContadorActivo = false;                     // Detener contador por activación manual
@@ -590,9 +583,9 @@ void loop() {
       }
 
       // =====================================================================
-      // ENDPOINT: /rele3off (Apagar GPIO 25 manualmente, nombre legado por compatibilidad)
+      // ENDPOINT: /gpio25off (principal) y /rele3off (legado compatible)
       // =====================================================================
-      if (req.indexOf("GET /rele3off") != -1) {
+      if (req.indexOf("GET /gpio25off") != -1 || req.indexOf("GET /rele3off") != -1) {
         digitalWrite(RELAY4_PIN, LOW);                    // Establecer GPIO 25 a LOW (OFF)
         estadoRele4Int = 0;                               // Guardar estado en variable INT
         relay4ContadorActivo = false;                     // Detener contador por apagado manual
@@ -661,8 +654,8 @@ void loop() {
       pagina += "function setDown(){fetch('/down');}";
 
       // Funciones para controlar GPIO 25 manualmente
-      pagina += "function gpio25On(){fetch('/rele3on');}";
-      pagina += "function gpio25Off(){fetch('/rele3off');}";
+      pagina += "function gpio25On(){fetch('/gpio25on');}";
+      pagina += "function gpio25Off(){fetch('/gpio25off');}";
 
       pagina += "</script>";
 
