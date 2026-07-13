@@ -573,7 +573,7 @@ void loop() {
       }
 
       // =====================================================================
-      // ENDPOINT: /rele3on (Encender GPIO 25 manualmente)
+      // ENDPOINT: /rele3on (Encender GPIO 25 manualmente, nombre legado por compatibilidad)
       // =====================================================================
       if (req.indexOf("GET /rele3on") != -1) {
         digitalWrite(RELAY4_PIN, HIGH);                   // Establecer GPIO 25 a HIGH (ON)
@@ -590,7 +590,7 @@ void loop() {
       }
 
       // =====================================================================
-      // ENDPOINT: /rele3off (Apagar GPIO 25 manualmente)
+      // ENDPOINT: /rele3off (Apagar GPIO 25 manualmente, nombre legado por compatibilidad)
       // =====================================================================
       if (req.indexOf("GET /rele3off") != -1) {
         digitalWrite(RELAY4_PIN, LOW);                    // Establecer GPIO 25 a LOW (OFF)
@@ -661,8 +661,8 @@ void loop() {
       pagina += "function setDown(){fetch('/down');}";
 
       // Funciones para controlar GPIO 25 manualmente
-      pagina += "function rele3On(){fetch('/rele3on');}";
-      pagina += "function rele3Off(){fetch('/rele3off');}";
+      pagina += "function gpio25On(){fetch('/rele3on');}";
+      pagina += "function gpio25Off(){fetch('/rele3off');}";
 
       pagina += "</script>";
 
@@ -716,8 +716,8 @@ void loop() {
       pagina += "<div class='card'><h2>RELÉ GPIO 25 (CONTROL MANUAL ON/OFF)</h2>";
       pagina += "<div>Estado actual GPIO 25: <span id='r4manual'></span></div>";
       pagina += "<div class='button-group'>";
-      pagina += "<button id='btnRele25On' onclick='rele3On()' style='background:#27ae60;'>🟢 ENCENDER</button>";
-      pagina += "<button id='btnRele25Off' onclick='rele3Off()' style='background:#e74c3c;'>🔴 APAGAR</button>";
+      pagina += "<button id='btnRele25On' onclick='gpio25On()' style='background:#27ae60;'>🟢 ENCENDER</button>";
+      pagina += "<button id='btnRele25Off' onclick='gpio25Off()' style='background:#e74c3c;'>🔴 APAGAR</button>";
       pagina += "</div></div>";
 
       // ---- SECCIÓN: ESTADO RELAY4 (AUTOMÁTICO CON TEMPORIZADOR) - NUEVO ----
