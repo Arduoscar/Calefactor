@@ -6,10 +6,10 @@
 // Funcionalidades principales:
 //  - Servidor Web NO BLOQUEANTE con IP fija
 //  - DHT11 (lectura temperatura/humedad exterior)
-//  - KY-013 (lectura temperatura interna) + ajuste +1°C
+//  - DHT11 (lectura temperatura/humedad interior) - MEJORADO
 //  - Relés con control IR y modos avanzados
 //  - RELAY3: Control manual ON/OFF independiente
-//  - RELAY4 (GPIO 25): Sigue a RELAY1/2 con retraso al apagar - NUEVO
+//  - RELAY4 (GPIO 25): Sigue a RELAY1/2 con retraso al apagar
 //  - EEPROM para persistencia de datos
 //  - LCD I2C 16x2 optimizada sin parpadeo
 //  - Control automático con HISTERESIS anti-rebote
@@ -25,15 +25,12 @@
 #include <LiquidCrystal_I2C.h>     // Librería para pantalla LCD I2C
 
 // =====================================================================
-// GRUPO: CONFIGURACIÓN DEL SENSOR DHT11
+// GRUPO: CONFIGURACIÓN DE LOS SENSORES DHT11
 // =====================================================================
-#define DHTPIN 17                  // Pin GPIO 17 del ESP32 para el DHT11
-DHTesp dht;                        // Objeto para manejar el sensor DHT
-
-// =====================================================================
-// GRUPO: CONFIGURACIÓN DEL SENSOR KY-013 (temperatura analógica)
-// =====================================================================
-#define KY_PIN 36                  // Pin analógico GPIO 36 (ADC) para KY-013
+#define DHT_EXTERIOR_PIN 17        // Pin GPIO 17 del ESP32 para el DHT11 exterior
+#define DHT_INTERIOR_PIN 14        // Pin GPIO 14 del ESP32 para el DHT11 interior
+DHTesp dhtExterior;                // Objeto para manejar el sensor DHT exterior
+DHTesp dhtInterior;                // Objeto para manejar el sensor DHT interior
 
 // =====================================================================
 // GRUPO: CONFIGURACIÓN DE LOS RELÉS
@@ -41,7 +38,7 @@ DHTesp dht;                        // Objeto para manejar el sensor DHT
 #define RELAY1_PIN 16              // Pin GPIO 16 para el relé 1 (automático 1)
 #define RELAY2_PIN 18              // Pin GPIO 18 para el relé 2 (automático 2)
 #define RELAY3_PIN 19              // Pin GPIO 19 para el relé 3 (manual ON/OFF)
-#define RELAY4_PIN 25              // Pin GPIO 25 para el relé 4 (sigue a RELAY1/2 con retraso al apagar) - NUEVO
+#define RELAY4_PIN 25              // Pin GPIO 25 para el relé 4 (sigue a RELAY1/2 con retraso al apagar)
 
 // =====================================================================
 // GRUPO: CONFIGURACIÓN DEL RECEPTOR INFRARROJO HX1838
@@ -63,7 +60,7 @@ int estadoReles = 0;               // Almacena estado anterior de relés para EE
 int estadoRele3Int = 0;            // Estado del relé manual (0=OFF, 1=ON)
 
 // =====================================================================
-// GRUPO: VARIABLES PARA RELAY4 (Sigue a RELAY1/2 con retraso al apagar) - NUEVO
+// GRUPO: VARIABLES PARA RELAY4 (Sigue a RELAY1/2 con retraso al apagar)
 // =====================================================================
 bool relay4EnEspera = false;        // Flag: true si está en período de espera de 5 minutos
 unsigned long relay4Timer = 0;      // Timestamp del inicio del temporizador de 5 minutos
@@ -102,8 +99,8 @@ WiFiServer server(80);                  // Servidor web escuchando en puerto 80 
 // GRUPO: VARIABLES DE CONTROL LCD (ANTI-PARPADEO)
 // =====================================================================
 // Estas variables almacenan el último valor mostrado para evitar redibujado innecesario
-float lastTemp = -100;                  // Última temperatura DHT mostrada
-float lastTempKY = -100;                // Última temperatura KY-013 mostrada
+float lastTemp = -100;                  // Última temperatura DHT exterior mostrada
+float lastTempInterior = -100;          // Última temperatura DHT interior mostrada
 int lastModo = -1;                      // Último modo mostrado
 int lastSetpoint = -1;                  // Último setpoint mostrado
 int lastEstadoRele3 = -1;               // Último estado relay3 mostrado
@@ -111,7 +108,7 @@ int lastEstadoRele3 = -1;               // Último estado relay3 mostrado
 // =====================================================================
 // GRUPO: HISTERESIS ANTI-REBOTE
 // =====================================================================
-// La hist éresis evita oscilaciones rápidas del relé cuando la temperatura está cerca del setpoint
+// La histéresis evita oscilaciones rápidas del relé cuando la temperatura está cerca del setpoint
 const float HISTERESIS = 1.0;           // Rango de histéresis en grados Celsius
 
 // =====================================================================
@@ -122,11 +119,12 @@ unsigned long lastBlink = 0;            // Timestamp del último cambio de parpa
 bool blinkState = false;                // Estado actual del parpadeo (true=visible, false=oculto)
 
 // =====================================================================
-// GRUPO: LECTURA ESTABLE DEL KY-013
+// GRUPO: LECTURA DE SENSORES
 // =====================================================================
-// El KY-013 se lee cada 500ms promediando 10 muestras para evitar ruido
-unsigned long lastKY = 0;               // Timestamp de la última lectura estable del KY-013
-float tempKY = 0;                       // Temperatura interna estable (actualizada cada 500ms)
+float tempInterior = 0;                 // Temperatura interior (DHT11 interior)
+float humInterior = 0;                  // Humedad interior (DHT11 interior)
+float tempExterior = 0;                 // Temperatura exterior (DHT11 exterior)
+float humExterior = 0;                  // Humedad exterior (DHT11 exterior)
 
 // =====================================================================
 //  FUNCIÓN: SETUP (Inicialización del sistema)
@@ -173,20 +171,23 @@ void setup() {
     Serial.println("\nWiFi NO disponible");       // Mensaje de error
   }
 
-  // ---- SECCIÓN: Configuración del sensor DHT11 ----
-  dht.setup(DHTPIN, DHTesp::DHT11);               // Inicializar DHT11 en pin DHTPIN
+  // ---- SECCIÓN: Configuración del sensor DHT11 exterior ----
+  dhtExterior.setup(DHT_EXTERIOR_PIN, DHTesp::DHT11);  // Inicializar DHT11 exterior en pin GPIO 17
+
+  // ---- SECCIÓN: Configuración del sensor DHT11 interior ----
+  dhtInterior.setup(DHT_INTERIOR_PIN, DHTesp::DHT11);  // Inicializar DHT11 interior en pin GPIO 14
 
   // ---- SECCIÓN: Configuración de pines de relés como salidas ----
   pinMode(RELAY1_PIN, OUTPUT);                   // Configurar RELAY1 como salida digital
   pinMode(RELAY2_PIN, OUTPUT);                   // Configurar RELAY2 como salida digital
   pinMode(RELAY3_PIN, OUTPUT);                   // Configurar RELAY3 como salida digital
-  pinMode(RELAY4_PIN, OUTPUT);                   // Configurar RELAY4 como salida digital - NUEVO
+  pinMode(RELAY4_PIN, OUTPUT);                   // Configurar RELAY4 como salida digital
 
   // ---- SECCIÓN: Inicialización de relés en estado OFF (LOW) ----
   digitalWrite(RELAY1_PIN, LOW);                 // Apagar relé 1
   digitalWrite(RELAY2_PIN, LOW);                 // Apagar relé 2
   digitalWrite(RELAY3_PIN, LOW);                 // Apagar relé 3
-  digitalWrite(RELAY4_PIN, LOW);                 // Apagar relé 4 - NUEVO
+  digitalWrite(RELAY4_PIN, LOW);                 // Apagar relé 4
 
   // ---- SECCIÓN: Configuración del receptor infrarrojo ----
   IrReceiver.begin(IR_PIN, ENABLE_LED_FEEDBACK); // Inicializar IR con feedback LED
@@ -206,25 +207,15 @@ void setup() {
 void loop() {
 
   // =====================================================================
-  // GRUPO: LECTURA ESTABLE DEL SENSOR KY-013 CADA 500ms
+  // GRUPO: LECTURA DE SENSORES DHT11
   // =====================================================================
-  // Se realiza cada 500ms para no saturar el bucle principal
-  if (millis() - lastKY >= 500) {
-    // ---- SECCIÓN: Recolección de 10 muestras del ADC ----
-    int suma = 0;                                // Variable acumuladora para promediar
-    for(int i=0; i<10; i++){                     // Bucle para tomar 10 muestras
-      suma += analogRead(KY_PIN);                // Leer valor analógico y sumar
-      delay(1);                                  // Esperar 1ms entre muestras
-    }
+  // Leer temperatura y humedad del DHT11 exterior
+  tempExterior = dhtExterior.getTemperature();   // Leer temperatura exterior en °C
+  humExterior = dhtExterior.getHumidity();       // Leer humedad exterior en %
 
-    // ---- SECCIÓN: Cálculo del promedio y conversión a temperatura ----
-    int rawKY = suma / 10;                       // Dividir por 10 para obtener promedio
-    // Mapear rango analógico (0-5950) a rango de temperatura (0-50°C) y sumar +1°C de ajuste
-    tempKY = map(rawKY, 0, 5950, 0, 50) + 1;
-
-    // ---- SECCIÓN: Actualización del timestamp de lectura ----
-    lastKY = millis();                           // Guardar tiempo actual
-  }
+  // Leer temperatura y humedad del DHT11 interior
+  tempInterior = dhtInterior.getTemperature();   // Leer temperatura interior en °C (datos crudos y reales)
+  humInterior = dhtInterior.getHumidity();       // Leer humedad interior en %
 
   // =====================================================================
   // GRUPO: LECTURA DEL CONTROL REMOTO INFRARROJO
@@ -293,12 +284,6 @@ void loop() {
   }
 
   // =====================================================================
-  // GRUPO: LECTURA DEL SENSOR DHT11
-  // =====================================================================
-  float temperatura = dht.getTemperature();               // Leer temperatura exterior en °C
-  float humedad = dht.getHumidity();                      // Leer humedad relativa en %
-
-  // =====================================================================
   // GRUPO: CONTROL AUTOMÁTICO DE RELÉS SEGÚN MODO
   // =====================================================================
   // La lógica usa histéresis para evitar oscilaciones del relé
@@ -307,12 +292,12 @@ void loop() {
   if (modo == 1) {
     // Si el relé 1 está encendido (HIGH), verificar si debe apagarse
     if (digitalRead(RELAY1_PIN)) {
-      // Si temperatura interna >= setpoint + histéresis, apagar relé
-      if (tempKY >= setpoint + HISTERESIS) digitalWrite(RELAY1_PIN, LOW);
+      // Si temperatura interior >= setpoint + histéresis, apagar relé
+      if (tempInterior >= setpoint + HISTERESIS) digitalWrite(RELAY1_PIN, LOW);
     } else {
       // Si el relé 1 está apagado, verificar si debe encenderse
-      // Si temperatura interna <= setpoint - histéresis, encender relé
-      if (tempKY <= setpoint - HISTERESIS) digitalWrite(RELAY1_PIN, HIGH);
+      // Si temperatura interior <= setpoint - histéresis, encender relé
+      if (tempInterior <= setpoint - HISTERESIS) digitalWrite(RELAY1_PIN, HIGH);
     }
     digitalWrite(RELAY2_PIN, LOW);                        // Asegurar que RELAY2 está OFF
   }
@@ -321,12 +306,12 @@ void loop() {
   if (modo == 2) {
     // Si el relé 2 está encendido (HIGH), verificar si debe apagarse
     if (digitalRead(RELAY2_PIN)) {
-      // Si temperatura interna >= setpoint + histéresis, apagar relé
-      if (tempKY >= setpoint + HISTERESIS) digitalWrite(RELAY2_PIN, LOW);
+      // Si temperatura interior >= setpoint + histéresis, apagar relé
+      if (tempInterior >= setpoint + HISTERESIS) digitalWrite(RELAY2_PIN, LOW);
     } else {
       // Si el relé 2 está apagado, verificar si debe encenderse
-      // Si temperatura interna <= setpoint - histéresis, encender relé
-      if (tempKY <= setpoint - HISTERESIS) digitalWrite(RELAY2_PIN, HIGH);
+      // Si temperatura interior <= setpoint - histéresis, encender relé
+      if (tempInterior <= setpoint - HISTERESIS) digitalWrite(RELAY2_PIN, HIGH);
     }
     digitalWrite(RELAY1_PIN, LOW);                        // Asegurar que RELAY1 está OFF
   }
@@ -336,15 +321,15 @@ void loop() {
   if (modo == 3) {
     // Si alguno de los relés está encendido
     if (digitalRead(RELAY1_PIN) || digitalRead(RELAY2_PIN)) {
-      // Si temperatura interna >= setpoint + histéresis, apagar ambos
-      if (tempKY >= setpoint + HISTERESIS) {
+      // Si temperatura interior >= setpoint + histéresis, apagar ambos
+      if (tempInterior >= setpoint + HISTERESIS) {
         digitalWrite(RELAY1_PIN, LOW);
         digitalWrite(RELAY2_PIN, LOW);
       }
     } else {
       // Si ambos relés están apagados, verificar si deben encenderse
-      // Si temperatura interna <= setpoint - histéresis, encender ambos
-      if (tempKY <= setpoint - HISTERESIS) {
+      // Si temperatura interior <= setpoint - histéresis, encender ambos
+      if (tempInterior <= setpoint - HISTERESIS) {
         digitalWrite(RELAY1_PIN, HIGH);
         digitalWrite(RELAY2_PIN, HIGH);
       }
@@ -352,7 +337,7 @@ void loop() {
   }
 
   // =====================================================================
-  // GRUPO: CONTROL DE RELAY4 (Sigue a RELAY1/2 con retraso al apagar) - NUEVO
+  // GRUPO: CONTROL DE RELAY4 (Sigue a RELAY1/2 con retraso al apagar)
   // =====================================================================
   // Lógica:
   // - Si RELAY1 O RELAY2 están HIGH → RELAY4 está HIGH inmediatamente
@@ -401,9 +386,9 @@ void loop() {
   String estadoRele1 = digitalRead(RELAY1_PIN) ? "ON" : "OFF";  // RELAY1: ON o OFF
   String estadoRele2 = digitalRead(RELAY2_PIN) ? "ON" : "OFF";  // RELAY2: ON o OFF
   String estadoRele3String = digitalRead(RELAY3_PIN) ? "ON" : "OFF";  // RELAY3: ON o OFF
-  String estadoRele4 = digitalRead(RELAY4_PIN) ? "ON" : "OFF";  // RELAY4: ON o OFF - NUEVO
+  String estadoRele4 = digitalRead(RELAY4_PIN) ? "ON" : "OFF";  // RELAY4: ON o OFF
 
-  // ---- SECCIÓN: Cálculo del tiempo restante del temporizador para mostrar en web - NUEVO ----
+  // ---- SECCIÓN: Cálculo del tiempo restante del temporizador para mostrar en web ----
   unsigned long tiempoRestante = 0;                       // Tiempo restante en segundos
   if (relay4EnEspera) {
     // Si estamos dentro del temporizador, calcular tiempo restante
@@ -421,21 +406,21 @@ void loop() {
   // Solo se redibuja si hay cambios para evitar parpadeos innecesarios
 
   // ---- SECCIÓN: Mostrar temperatura exterior (DHT11) ----
-  if (temperatura != lastTemp) {
+  if (tempExterior != lastTemp) {
     lcd.setCursor(0,0);                                   // Posicionar cursor fila 0, columna 0
     lcd.print("EXT:");                                    // Etiqueta "EXT"
-    lcd.print(temperatura,1);                             // Mostrar temperatura con 1 decimal
+    lcd.print(tempExterior,1);                            // Mostrar temperatura con 1 decimal
     lcd.print("   ");                                     // Espacios para limpiar caracteres anteriores
-    lastTemp = temperatura;                               // Guardar valor mostrado
+    lastTemp = tempExterior;                              // Guardar valor mostrado
   }
 
-  // ---- SECCIÓN: Mostrar temperatura interior (KY-013) ----
-  if (tempKY != lastTempKY) {
+  // ---- SECCIÓN: Mostrar temperatura interior (DHT11) ----
+  if (tempInterior != lastTempInterior) {
     lcd.setCursor(10,0);                                  // Posicionar cursor fila 0, columna 10
     lcd.print("INT:");                                    // Etiqueta "INT"
-    lcd.print(tempKY,0);                                  // Mostrar temperatura sin decimales
+    lcd.print(tempInterior,0);                            // Mostrar temperatura sin decimales
     lcd.print("   ");                                     // Espacios para limpiar caracteres anteriores
-    lastTempKY = tempKY;                                  // Guardar valor mostrado
+    lastTempInterior = tempInterior;                      // Guardar valor mostrado
   }
 
   // ---- SECCIÓN: Mostrar modo de operación actual ----
@@ -494,16 +479,17 @@ void loop() {
 
         // ---- Construcción del JSON con los datos actuales ----
         String json = "{";                                // Abrir objeto JSON
-        json += "\"temperatura\":" + String(temperatura) + ",";  // Temperatura DHT11
-        json += "\"humedad\":" + String(humedad) + ",";           // Humedad DHT11
-        json += "\"tempKY\":" + String(tempKY) + ",";             // Temperatura KY-013
+        json += "\"temperatura\":" + String(tempExterior) + ",";  // Temperatura DHT11 exterior
+        json += "\"humedad\":" + String(humExterior) + ",";           // Humedad DHT11 exterior
+        json += "\"tempInterior\":" + String(tempInterior) + ",";     // Temperatura DHT11 interior
+        json += "\"humedadInterior\":" + String(humInterior) + ",";   // Humedad DHT11 interior
         json += "\"setpoint\":" + String(setpoint) + ",";         // Setpoint actual
         json += "\"modo\":" + String(modo) + ",";                 // Modo actual
         json += "\"rele1\":\"" + estadoRele1 + "\",";             // Estado RELAY1
         json += "\"rele2\":\"" + estadoRele2 + "\",";             // Estado RELAY2
         json += "\"rele3\":\"" + estadoRele3String + "\",";       // Estado RELAY3
-        json += "\"rele4\":\"" + estadoRele4 + "\",";             // Estado RELAY4 - NUEVO
-        json += "\"tiempoRestante\":" + String(tiempoRestante);   // Tiempo restante del timer - NUEVO
+        json += "\"rele4\":\"" + estadoRele4 + "\",";             // Estado RELAY4
+        json += "\"tiempoRestante\":" + String(tiempoRestante);   // Tiempo restante del timer
         json += "}";                                      // Cerrar objeto JSON
 
         // ---- Envío de respuesta HTTP con JSON ----
@@ -592,15 +578,16 @@ void loop() {
 
       // Actualizar elementos HTML con los datos recibidos
       pagina += "document.getElementById('temp').innerHTML = d.temperatura;";     // Temperatura exterior
-      pagina += "document.getElementById('hum').innerHTML = d.humedad;";           // Humedad
-      pagina += "document.getElementById('ky').innerHTML = d.tempKY;";             // Temperatura interior
+      pagina += "document.getElementById('hum').innerHTML = d.humedad;";           // Humedad exterior
+      pagina += "document.getElementById('tempInt').innerHTML = d.tempInterior;";  // Temperatura interior
+      pagina += "document.getElementById('humInt').innerHTML = d.humedadInterior;"; // Humedad interior
       pagina += "document.getElementById('setp').innerHTML = d.setpoint;";         // Setpoint
       pagina += "document.getElementById('modo').innerHTML = d.modo;";             // Modo
       pagina += "document.getElementById('r1').innerHTML = d.rele1;";              // Estado RELAY1
       pagina += "document.getElementById('r2').innerHTML = d.rele2;";              // Estado RELAY2
       pagina += "document.getElementById('r3').innerHTML = d.rele3;";              // Estado RELAY3
-      pagina += "document.getElementById('r4').innerHTML = d.rele4;";              // Estado RELAY4 - NUEVO
-      pagina += "document.getElementById('timer').innerHTML = d.tiempoRestante + ' seg';"; // Timer - NUEVO
+      pagina += "document.getElementById('r4').innerHTML = d.rele4;";              // Estado RELAY4
+      pagina += "document.getElementById('timer').innerHTML = d.tiempoRestante + ' seg';"; // Timer
 
       // Mostrar alerta si está en MODO 3 (PRECAUCIÓN)
       pagina += "if(d.modo == 3){document.getElementById('alerta').style.display='block';}";
@@ -614,7 +601,7 @@ void loop() {
       pagina += "document.getElementById('btnRele3On').style.background='#3498db';"; // Azul si está OFF
       pagina += "document.getElementById('btnRele3Off').style.background='#e74c3c';}"; // Rojo si está ON
 
-      // Cambiar color del indicador RELAY4 según su estado - NUEVO
+      // Cambiar color del indicador RELAY4 según su estado
       pagina += "if(d.rele4 == 'ON'){";
       pagina += "document.getElementById('r4').style.background='#27ae60';";       // Verde si está ON
       pagina += "document.getElementById('r4').style.color='white';}";
@@ -659,9 +646,10 @@ void loop() {
       pagina += "<div>TEMPERATURA: <span id='temp'></span> °C</div>";
       pagina += "<div>HUMEDAD: <span id='hum'></span> %</div></div>";
 
-      // ---- SECCIÓN: TEMPERATURA INTERIOR (KY-013) ----
+      // ---- SECCIÓN: TEMPERATURA INTERIOR (DHT11) ----
       pagina += "<div class='card'><h2>TEMPERATURA INTERIOR</h2>";
-      pagina += "<div>Temperatura: <span id='ky'></span> °C</div></div>";
+      pagina += "<div>TEMPERATURA: <span id='tempInt'></span> °C</div>";
+      pagina += "<div>HUMEDAD: <span id='humInt'></span> %</div></div>";
 
       // ---- SECCIÓN: CONTROL DE SETPOINT ----
       pagina += "<div class='card'><h2>SETPOINT</h2>";
@@ -691,7 +679,7 @@ void loop() {
       pagina += "<button id='btnRele3Off' onclick='rele3Off()' style='background:#e74c3c;'>🔴 APAGAR</button>";
       pagina += "</div></div>";
 
-      // ---- SECCIÓN: ESTADO RELAY4 (AUTOMÁTICO CON TEMPORIZADOR) - NUEVO ----
+      // ---- SECCIÓN: ESTADO RELAY4 (AUTOMÁTICO CON TEMPORIZADOR) ----
       pagina += "<div class='card'><h2>RELÉ AUTOMÁTICO CON RETRASO (5 MINUTOS)</h2>";
       pagina += "<div>Estado: <span id='r4' class='state-box'></span></div>";
       pagina += "<div>Tiempo restante: <span id='timer' class='state-box'>0 seg</span></div>";
