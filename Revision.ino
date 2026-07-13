@@ -61,14 +61,15 @@ int setpoint = 25;                 // Valor de temperatura objetivo (setpoint)
 int modo = 1;                      // Modo de operación (1=AUTO1, 2=AUTO2, 3=PRECAUCIÓN)
 int estadoReles = 0;               // Almacena estado anterior de relés para EEPROM
 int estadoRele3Int = 0;            // Estado del relé manual (0=OFF, 1=ON)
+int estadoRele4Int = 0;            // Estado del relé GPIO 25 (0=OFF, 1=ON)
 
 // =====================================================================
 // GRUPO: VARIABLES PARA RELAY4 (Sigue a RELAY1/2 con retraso) - NUEVO
 // =====================================================================
-bool relay4EnEspera = false;        // Flag: true si está esperando 5 minutos para apagar
+bool relay4ContadorActivo = false;  // Flag: true si el contador de 5 minutos está activo
 unsigned long relay4Timer = 0;      // Timestamp del inicio del temporizador de 5 minutos
 const unsigned long TIMER_5MIN = 300000; // 5 minutos en milisegundos (300000 ms)
-bool setpointAlcanzado = false;    // Flag: true si tempKY >= setpoint (inicia el contador)
+bool setpointAlcanzado = false;    // Flag: true si tempKY alcanzó setpoint al menos una vez
 
 // =====================================================================
 // GRUPO: DIRECCIONES DE ALMACENAMIENTO EN EEPROM
@@ -77,6 +78,7 @@ int addrSetpoint    = 0;           // Dirección EEPROM para guardar setpoint
 int addrModo        = 4;           // Dirección EEPROM para guardar modo
 int addrEstadoReles = 8;           // Dirección EEPROM para guardar estado de relés
 int addrRele3       = 12;          // Dirección EEPROM para guardar estado relay3
+int addrRele4       = 16;          // Dirección EEPROM para guardar estado relay4 (GPIO 25)
 
 // =====================================================================
 // GRUPO: CONFIGURACIÓN WIFI
@@ -143,6 +145,7 @@ void setup() {
   int eModo     = EEPROM.readInt(addrModo);       // Leer modo guardado
   int eEstado   = EEPROM.readInt(addrEstadoReles);// Leer estado relés guardado
   int eRele3    = EEPROM.readInt(addrRele3);      // Leer estado relay3 guardado
+  int eRele4    = EEPROM.readInt(addrRele4);      // Leer estado relay4 guardado
 
   // ---- SECCIÓN: Validación e importación de valores EEPROM ----
   // Solo se importan valores si están dentro de los rangos válidos
@@ -150,6 +153,7 @@ void setup() {
   if (eModo >= 1 && eModo <= 3) modo = eModo;                    // Validar modo (1, 2 o 3)
   if (eEstado >= 0 && eEstado <= 3) estadoReles = eEstado;       // Validar estado relés
   if (eRele3 >= 0 && eRele3 <= 1) estadoRele3Int = eRele3;       // Validar relay3 (0 o 1)
+  if (eRele4 >= 0 && eRele4 <= 1) estadoRele4Int = eRele4;       // Validar relay4 (0 o 1)
 
   // ---- SECCIÓN: Configuración de red WiFi ----
   // Asignar IP fija antes de conectar
@@ -186,7 +190,7 @@ void setup() {
   digitalWrite(RELAY1_PIN, LOW);                 // Apagar relé 1
   digitalWrite(RELAY2_PIN, LOW);                 // Apagar relé 2
   digitalWrite(RELAY3_PIN, LOW);                 // Apagar relé 3
-  digitalWrite(RELAY4_PIN, LOW);                 // Apagar relé 4 - NUEVO
+  digitalWrite(RELAY4_PIN, estadoRele4Int ? HIGH : LOW); // Restaurar relé 4 guardado
 
   // ---- SECCIÓN: Configuración del receptor infrarrojo ----
   IrReceiver.begin(IR_PIN, ENABLE_LED_FEEDBACK); // Inicializar IR con feedback LED
@@ -288,6 +292,24 @@ void loop() {
       EEPROM.commit();                                     // Confirmar
     }
 
+    // ---- SECCIÓN: Botón IR para forzar GPIO 25 a ON (manual) ----
+    if (command == 0x44) {
+      digitalWrite(RELAY4_PIN, HIGH);                      // Encender GPIO 25 inmediatamente
+      estadoRele4Int = 1;                                  // Actualizar estado entero para EEPROM
+      relay4ContadorActivo = false;                        // Reiniciar contador al forzar encendido
+      EEPROM.writeInt(addrRele4, estadoRele4Int);          // Guardar estado manual de GPIO 25
+      EEPROM.commit();                                     // Confirmar escritura en EEPROM
+    }
+
+    // ---- SECCIÓN: Botón IR para forzar GPIO 25 a OFF (manual) ----
+    if (command == 0x43) {
+      digitalWrite(RELAY4_PIN, LOW);                       // Apagar GPIO 25 inmediatamente
+      estadoRele4Int = 0;                                  // Actualizar estado entero para EEPROM
+      relay4ContadorActivo = false;                        // Reiniciar contador al forzar apagado
+      EEPROM.writeInt(addrRele4, estadoRele4Int);          // Guardar estado manual de GPIO 25
+      EEPROM.commit();                                     // Confirmar escritura en EEPROM
+    }
+
     // ---- SECCIÓN: Reanudación del receptor IR para próximas lecturas ----
     IrReceiver.resume();                                   // Preparar IR para siguiente código
   }
@@ -354,42 +376,43 @@ void loop() {
   // =====================================================================
   // GRUPO: CONTROL DE RELAY4 (Sigue a RELAY1/2 con retraso de 5 min) - NUEVO
   // =====================================================================
-  // Lógica: RELAY4 sigue a RELAY1 O RELAY2, PERO con 5 min de retraso al apagar
-  //         cuando se alcanza el setpoint
+  // Lógica solicitada:
+  // 1) Si RELAY1 o RELAY2 están HIGH => RELAY4 HIGH inmediato.
+  // 2) Si RELAY1 y RELAY2 están LOW => iniciar conteo de 5 minutos, solo si ya se alcanzó setpoint.
+  // 3) Si durante conteo vuelve HIGH en RELAY1/2 => cancelar/reiniciar conteo y RELAY4 vuelve HIGH.
+  // 4) Solo después de 5 minutos continuos en LOW => RELAY4 LOW.
 
-  // ---- SECCIÓN: Detectar cuando la temperatura alcanza el setpoint ----
-  if (tempKY >= setpoint && !setpointAlcanzado) {
-    // Primera vez que se alcanza el setpoint
-    setpointAlcanzado = true;                             // Marcar que se alcanzó
-    relay4EnEspera = true;                                // Iniciar la espera de 5 minutos
-    relay4Timer = millis();                               // Guardar tiempo del evento
-    Serial.println("SETPOINT ALCANZADO - Iniciando temporizador 5 min");
+  // ---- SECCIÓN: Detección estable del setpoint con histéresis ----
+  if (!setpointAlcanzado && tempKY >= setpoint) {
+    setpointAlcanzado = true;                             // Latchear evento de setpoint alcanzado
+  }
+  if (setpointAlcanzado && tempKY <= setpoint - HISTERESIS) {
+    setpointAlcanzado = false;                            // Liberar latch cuando cae por histéresis
+    relay4ContadorActivo = false;                         // Cancelar contador hasta nuevo setpoint
   }
 
-  // ---- SECCIÓN: Si la temperatura baja del setpoint ----
-  if (tempKY < setpoint && setpointAlcanzado) {
-    // Temperatura bajó por debajo del setpoint
-    setpointAlcanzado = false;                            // Limpiar flag
-  }
+  // ---- SECCIÓN: Lectura de condición maestra (RELAY1/2) ----
+  bool rele1o2High = digitalRead(RELAY1_PIN) || digitalRead(RELAY2_PIN); // true si alguno está activo
 
-  // ---- SECCIÓN: Lógica principal de RELAY4 ----
-  // Si RELAY1 O RELAY2 están HIGH y NO estamos en período de espera → RELAY4 HIGH
-  if ((digitalRead(RELAY1_PIN) || digitalRead(RELAY2_PIN)) && !relay4EnEspera) {
-    digitalWrite(RELAY4_PIN, HIGH);                       // Encender RELAY4
+  // ---- SECCIÓN: Control inteligente principal de RELAY4 ----
+  if (rele1o2High) {
+    digitalWrite(RELAY4_PIN, HIGH);                       // Activación inmediata por demanda de RELAY1/2
+    relay4ContadorActivo = false;                         // Detener/reiniciar contador al volver a HIGH
   } else {
-    // Si estamos en período de espera (temporizador activo)
-    if (relay4EnEspera) {
-      // Verificar si han pasado 5 minutos
-      if (millis() - relay4Timer >= TIMER_5MIN) {
-        // Han pasado 5 minutos: Apagar RELAY4 y terminar espera
-        digitalWrite(RELAY4_PIN, LOW);                    // Apagar RELAY4
-        relay4EnEspera = false;                           // Terminar período de espera
-        Serial.println("5 MINUTOS COMPLETADOS - RELAY4 OFF");
+    if (setpointAlcanzado) {
+      if (!relay4ContadorActivo) {
+        relay4ContadorActivo = true;                      // Iniciar conteo solo cuando ambos pasan a LOW
+        relay4Timer = millis();                           // Guardar instante de inicio del conteo
       }
-      // Mientras el temporizador está activo, RELAY4 permanece HIGH (sigue a RELAY1/2)
-    } else if (!relay4EnEspera && !(digitalRead(RELAY1_PIN) || digitalRead(RELAY2_PIN))) {
-      // Si no estamos en espera Y RELAY1/2 están OFF → RELAY4 OFF
-      digitalWrite(RELAY4_PIN, LOW);                      // Apagar RELAY4
+
+      if (millis() - relay4Timer >= TIMER_5MIN) {
+        digitalWrite(RELAY4_PIN, LOW);                    // Apagar tras 5 minutos LOW ininterrumpidos
+      } else {
+        digitalWrite(RELAY4_PIN, HIGH);                   // Mantener HIGH mientras corre el temporizador
+      }
+    } else {
+      relay4ContadorActivo = false;                       // Sin setpoint alcanzado no hay conteo activo
+      digitalWrite(RELAY4_PIN, HIGH);                     // Mantener HIGH hasta alcanzar setpoint
     }
   }
 
@@ -399,9 +422,17 @@ void loop() {
   String estadoRele3String = digitalRead(RELAY3_PIN) ? "ON" : "OFF";  // RELAY3: ON o OFF
   String estadoRele4 = digitalRead(RELAY4_PIN) ? "ON" : "OFF";  // RELAY4: ON o OFF - NUEVO
 
+  // ---- SECCIÓN: Persistencia del estado real de GPIO 25 en EEPROM ----
+  int estadoRele4ActualInt = digitalRead(RELAY4_PIN) ? 1 : 0;   // Convertir estado digital a entero
+  if (estadoRele4ActualInt != estadoRele4Int) {
+    estadoRele4Int = estadoRele4ActualInt;                       // Actualizar estado interno
+    EEPROM.writeInt(addrRele4, estadoRele4Int);                  // Persistir cambio en EEPROM
+    EEPROM.commit();                                             // Confirmar escritura solo cuando cambió
+  }
+
   // ---- SECCIÓN: Cálculo del tiempo restante del temporizador para mostrar en web - NUEVO ----
   unsigned long tiempoRestante = 0;                       // Tiempo restante en segundos
-  if (relay4EnEspera && setpointAlcanzado == false) {
+  if (relay4ContadorActivo) {
     // Si estamos dentro del temporizador, calcular tiempo restante
     unsigned long tiempoTranscurrido = millis() - relay4Timer;
     if (tiempoTranscurrido < TIMER_5MIN) {
@@ -542,12 +573,13 @@ void loop() {
       }
 
       // =====================================================================
-      // ENDPOINT: /rele3on (Encender RELAY3 manualmente)
+      // ENDPOINT: /rele3on (Encender GPIO 25 manualmente)
       // =====================================================================
       if (req.indexOf("GET /rele3on") != -1) {
-        digitalWrite(RELAY3_PIN, HIGH);                   // Establecer RELAY3 a HIGH (ON)
-        estadoRele3Int = 1;                               // Guardar estado en variable INT
-        EEPROM.writeInt(addrRele3, estadoRele3Int);       // Guardar en EEPROM
+        digitalWrite(RELAY4_PIN, HIGH);                   // Establecer GPIO 25 a HIGH (ON)
+        estadoRele4Int = 1;                               // Guardar estado en variable INT
+        relay4ContadorActivo = false;                     // Detener contador por activación manual
+        EEPROM.writeInt(addrRele4, estadoRele4Int);       // Guardar en EEPROM
         EEPROM.commit();                                  // Confirmar escritura
         client.println("HTTP/1.1 200 OK");                // Código de éxito
         client.println("Content-Type: text/plain");       // Tipo de contenido texto
@@ -558,12 +590,13 @@ void loop() {
       }
 
       // =====================================================================
-      // ENDPOINT: /rele3off (Apagar RELAY3 manualmente)
+      // ENDPOINT: /rele3off (Apagar GPIO 25 manualmente)
       // =====================================================================
       if (req.indexOf("GET /rele3off") != -1) {
-        digitalWrite(RELAY3_PIN, LOW);                    // Establecer RELAY3 a LOW (OFF)
-        estadoRele3Int = 0;                               // Guardar estado en variable INT
-        EEPROM.writeInt(addrRele3, estadoRele3Int);       // Guardar en EEPROM
+        digitalWrite(RELAY4_PIN, LOW);                    // Establecer GPIO 25 a LOW (OFF)
+        estadoRele4Int = 0;                               // Guardar estado en variable INT
+        relay4ContadorActivo = false;                     // Detener contador por apagado manual
+        EEPROM.writeInt(addrRele4, estadoRele4Int);       // Guardar en EEPROM
         EEPROM.commit();                                  // Confirmar escritura
         client.println("HTTP/1.1 200 OK");                // Código de éxito
         client.println("Content-Type: text/plain");       // Tipo de contenido texto
@@ -594,21 +627,21 @@ void loop() {
       pagina += "document.getElementById('modo').innerHTML = d.modo;";             // Modo
       pagina += "document.getElementById('r1').innerHTML = d.rele1;";              // Estado RELAY1
       pagina += "document.getElementById('r2').innerHTML = d.rele2;";              // Estado RELAY2
-      pagina += "document.getElementById('r3').innerHTML = d.rele3;";              // Estado RELAY3
       pagina += "document.getElementById('r4').innerHTML = d.rele4;";              // Estado RELAY4 - NUEVO
+      pagina += "document.getElementById('r4manual').innerHTML = d.rele4;";        // Estado GPIO 25 en control manual
       pagina += "document.getElementById('timer').innerHTML = d.tiempoRestante + ' seg';"; // Timer - NUEVO
 
       // Mostrar alerta si está en MODO 3 (PRECAUCIÓN)
       pagina += "if(d.modo == 3){document.getElementById('alerta').style.display='block';}";
       pagina += "else{document.getElementById('alerta').style.display='none';}";
 
-      // Cambiar color del botón RELAY3 según su estado
-      pagina += "if(d.rele3 == 'ON'){";
-      pagina += "document.getElementById('btnRele3On').style.background='#27ae60';"; // Verde si está ON
-      pagina += "document.getElementById('btnRele3Off').style.background='#3498db';}"; // Azul si está OFF
+      // Cambiar color de botones GPIO 25 según su estado actual
+      pagina += "if(d.rele4 == 'ON'){";
+      pagina += "document.getElementById('btnRele25On').style.background='#27ae60';"; // Verde si está ON
+      pagina += "document.getElementById('btnRele25Off').style.background='#3498db';}"; // Azul si está OFF
       pagina += "else{";
-      pagina += "document.getElementById('btnRele3On').style.background='#3498db';"; // Azul si está OFF
-      pagina += "document.getElementById('btnRele3Off').style.background='#e74c3c';}"; // Rojo si está ON
+      pagina += "document.getElementById('btnRele25On').style.background='#3498db';"; // Azul si está OFF
+      pagina += "document.getElementById('btnRele25Off').style.background='#e74c3c';}"; // Rojo si está ON
 
       // Cambiar color del indicador RELAY4 según su estado - NUEVO
       pagina += "if(d.rele4 == 'ON'){";
@@ -627,7 +660,7 @@ void loop() {
       pagina += "function setUp(){fetch('/up');}";
       pagina += "function setDown(){fetch('/down');}";
 
-      // Funciones para controlar RELAY3
+      // Funciones para controlar GPIO 25 manualmente
       pagina += "function rele3On(){fetch('/rele3on');}";
       pagina += "function rele3Off(){fetch('/rele3off');}";
 
@@ -679,12 +712,12 @@ void loop() {
       pagina += "<div class='card'><h2>SISTEMA 2 (AUTOMÁTICO)</h2>";
       pagina += "<div>Estado: <span id='r2'></span></div></div>";
 
-      // ---- SECCIÓN: CONTROL MANUAL RELAY3 ----
-      pagina += "<div class='card'><h2>RELÉ MANUAL (CONTROL ON/OFF)</h2>";
-      pagina += "<div>Estado: <span id='r3'></span></div>";
+      // ---- SECCIÓN: CONTROL MANUAL GPIO 25 ----
+      pagina += "<div class='card'><h2>RELÉ GPIO 25 (CONTROL MANUAL ON/OFF)</h2>";
+      pagina += "<div>Estado actual GPIO 25: <span id='r4manual'></span></div>";
       pagina += "<div class='button-group'>";
-      pagina += "<button id='btnRele3On' onclick='rele3On()' style='background:#27ae60;'>🟢 ENCENDER</button>";
-      pagina += "<button id='btnRele3Off' onclick='rele3Off()' style='background:#e74c3c;'>🔴 APAGAR</button>";
+      pagina += "<button id='btnRele25On' onclick='rele3On()' style='background:#27ae60;'>🟢 ENCENDER</button>";
+      pagina += "<button id='btnRele25Off' onclick='rele3Off()' style='background:#e74c3c;'>🔴 APAGAR</button>";
       pagina += "</div></div>";
 
       // ---- SECCIÓN: ESTADO RELAY4 (AUTOMÁTICO CON TEMPORIZADOR) - NUEVO ----
