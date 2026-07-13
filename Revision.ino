@@ -8,7 +8,8 @@
 //  - DHT11 (lectura temperatura/humedad exterior)
 //  - KY-013 (lectura temperatura interna) + ajuste +1°C
 //  - Relés con control IR y modos avanzados
-//  - RELAY3: Control manual ON/OFF independiente (NUEVO)
+//  - RELAY3: Control manual ON/OFF independiente
+//  - RELAY4 (GPIO 25): Control automático con temporizador de 5 minutos - NUEVO
 //  - EEPROM para persistencia de datos
 //  - LCD I2C 16x2 optimizada sin parpadeo
 //  - Control automático con HISTERESIS anti-rebote
@@ -39,7 +40,8 @@ DHTesp dht;                        // Objeto para manejar el sensor DHT
 // =====================================================================
 #define RELAY1_PIN 16              // Pin GPIO 16 para el relé 1 (automático 1)
 #define RELAY2_PIN 18              // Pin GPIO 18 para el relé 2 (automático 2)
-#define RELAY3_PIN 19              // Pin GPIO 19 para el relé 3 (manual ON/OFF) - NUEVO
+#define RELAY3_PIN 19              // Pin GPIO 19 para el relé 3 (manual ON/OFF)
+#define RELAY4_PIN 25              // Pin GPIO 25 para el relé 4 (control con temporizador) - NUEVO
 
 // =====================================================================
 // GRUPO: CONFIGURACIÓN DEL RECEPTOR INFRARROJO HX1838
@@ -49,6 +51,7 @@ DHTesp dht;                        // Objeto para manejar el sensor DHT
 // =====================================================================
 // GRUPO: CONFIGURACIÓN DE LA PANTALLA LCD I2C 16x2
 // =====================================================================
+// GPIO 21 (SDA) y GPIO 22 (SCL) para I2C - RESERVADOS
 LiquidCrystal_I2C lcd(0x27, 16, 2); // Pantalla LCD con dirección I2C 0x27, 16 columnas, 2 filas
 
 // =====================================================================
@@ -57,7 +60,15 @@ LiquidCrystal_I2C lcd(0x27, 16, 2); // Pantalla LCD con dirección I2C 0x27, 16 
 int setpoint = 25;                 // Valor de temperatura objetivo (setpoint)
 int modo = 1;                      // Modo de operación (1=AUTO1, 2=AUTO2, 3=PRECAUCIÓN)
 int estadoReles = 0;               // Almacena estado anterior de relés para EEPROM
-int estadoRele3Int = 0;            // Estado del relé 3 (0=OFF, 1=ON) - NUEVO - variable INT
+int estadoRele3Int = 0;            // Estado del relé manual (0=OFF, 1=ON)
+
+// =====================================================================
+// GRUPO: VARIABLES PARA RELAY4 (Control con temporizador) - NUEVO
+// =====================================================================
+bool relay4Activo = false;         // Flag: true si RELAY4 está en espera del temporizador
+unsigned long relay4Timer = 0;     // Timestamp del inicio del temporizador de 5 minutos
+const unsigned long TIMER_5MIN = 300000; // 5 minutos en milisegundos (300000 ms)
+bool setpointAlcanzado = false;    // Flag: true si tempKY >= setpoint
 
 // =====================================================================
 // GRUPO: DIRECCIONES DE ALMACENAMIENTO EN EEPROM
@@ -65,7 +76,7 @@ int estadoRele3Int = 0;            // Estado del relé 3 (0=OFF, 1=ON) - NUEVO -
 int addrSetpoint    = 0;           // Dirección EEPROM para guardar setpoint
 int addrModo        = 4;           // Dirección EEPROM para guardar modo
 int addrEstadoReles = 8;           // Dirección EEPROM para guardar estado de relés
-int addrRele3       = 12;          // Dirección EEPROM para guardar estado relay3 - NUEVO
+int addrRele3       = 12;          // Dirección EEPROM para guardar estado relay3
 
 // =====================================================================
 // GRUPO: CONFIGURACIÓN WIFI
@@ -95,7 +106,7 @@ float lastTemp = -100;                  // Última temperatura DHT mostrada
 float lastTempKY = -100;                // Última temperatura KY-013 mostrada
 int lastModo = -1;                      // Último modo mostrado
 int lastSetpoint = -1;                  // Último setpoint mostrado
-int lastEstadoRele3 = -1;               // Último estado relay3 mostrado - NUEVO
+int lastEstadoRele3 = -1;               // Último estado relay3 mostrado
 
 // =====================================================================
 // GRUPO: HISTERESIS ANTI-REBOTE
@@ -131,14 +142,14 @@ void setup() {
   int eSetpoint = EEPROM.readInt(addrSetpoint);   // Leer setpoint guardado
   int eModo     = EEPROM.readInt(addrModo);       // Leer modo guardado
   int eEstado   = EEPROM.readInt(addrEstadoReles);// Leer estado relés guardado
-  int eRele3    = EEPROM.readInt(addrRele3);      // Leer estado relay3 guardado - NUEVO
+  int eRele3    = EEPROM.readInt(addrRele3);      // Leer estado relay3 guardado
 
   // ---- SECCIÓN: Validación e importación de valores EEPROM ----
   // Solo se importan valores si están dentro de los rangos válidos
   if (eSetpoint >= 0 && eSetpoint <= 100) setpoint = eSetpoint;  // Validar setpoint (0-100°C)
   if (eModo >= 1 && eModo <= 3) modo = eModo;                    // Validar modo (1, 2 o 3)
   if (eEstado >= 0 && eEstado <= 3) estadoReles = eEstado;       // Validar estado relés
-  if (eRele3 >= 0 && eRele3 <= 1) estadoRele3Int = eRele3;       // Validar relay3 (0 o 1) - NUEVO
+  if (eRele3 >= 0 && eRele3 <= 1) estadoRele3Int = eRele3;       // Validar relay3 (0 o 1)
 
   // ---- SECCIÓN: Configuración de red WiFi ----
   // Asignar IP fija antes de conectar
@@ -168,12 +179,14 @@ void setup() {
   // ---- SECCIÓN: Configuración de pines de relés como salidas ----
   pinMode(RELAY1_PIN, OUTPUT);                   // Configurar RELAY1 como salida digital
   pinMode(RELAY2_PIN, OUTPUT);                   // Configurar RELAY2 como salida digital
-  pinMode(RELAY3_PIN, OUTPUT);                   // Configurar RELAY3 como salida digital - NUEVO
+  pinMode(RELAY3_PIN, OUTPUT);                   // Configurar RELAY3 como salida digital
+  pinMode(RELAY4_PIN, OUTPUT);                   // Configurar RELAY4 como salida digital - NUEVO
 
   // ---- SECCIÓN: Inicialización de relés en estado OFF (LOW) ----
   digitalWrite(RELAY1_PIN, LOW);                 // Apagar relé 1
   digitalWrite(RELAY2_PIN, LOW);                 // Apagar relé 2
-  digitalWrite(RELAY3_PIN, LOW);                 // Apagar relé 3 - NUEVO
+  digitalWrite(RELAY3_PIN, LOW);                 // Apagar relé 3
+  digitalWrite(RELAY4_PIN, LOW);                 // Apagar relé 4 - NUEVO
 
   // ---- SECCIÓN: Configuración del receptor infrarrojo ----
   IrReceiver.begin(IR_PIN, ENABLE_LED_FEEDBACK); // Inicializar IR con feedback LED
@@ -338,10 +351,65 @@ void loop() {
     }
   }
 
+  // =====================================================================
+  // GRUPO: CONTROL DE RELAY4 CON TEMPORIZADOR DE 5 MINUTOS - NUEVO
+  // =====================================================================
+  // Lógica: Si tempKY >= setpoint → RELAY4 OFF inmediatamente
+  //         Si tempKY < setpoint Y relay4Activo == true → Esperar 5 min, luego RELAY4 ON
+  //         Si tempKY >= setpoint Y relay4Activo == true → Reiniciar timer
+
+  // ---- SECCIÓN: Detectar cuando la temperatura alcanza el setpoint ----
+  if (tempKY >= setpoint && !setpointAlcanzado) {
+    // Primera vez que se alcanza el setpoint
+    setpointAlcanzado = true;                             // Marcar que se alcanzó
+    relay4Activo = true;                                  // Iniciar secuencia del temporizador
+    relay4Timer = millis();                               // Guardar tiempo del evento
+    digitalWrite(RELAY4_PIN, LOW);                        // Apagar RELAY4 inmediatamente
+    Serial.println("SETPOINT ALCANZADO - RELAY4 OFF");   // Debug
+  }
+
+  // ---- SECCIÓN: Si la temperatura vuelve a bajar del setpoint ----
+  if (tempKY < setpoint && setpointAlcanzado) {
+    // Temperatura bajó por debajo del setpoint
+    setpointAlcanzado = false;                            // Limpiar flag
+    
+    // Si aún está dentro del temporizador, esperar 5 minutos
+    if (relay4Activo && (millis() - relay4Timer >= TIMER_5MIN)) {
+      // Han pasado 5 minutos: ENCENDER RELAY4
+      digitalWrite(RELAY4_PIN, HIGH);                     // Encender RELAY4
+      relay4Activo = false;                               // Terminar secuencia
+      Serial.println("5 MINUTOS COMPLETADOS - RELAY4 ON"); // Debug
+    } else if (relay4Activo && (millis() - relay4Timer < TIMER_5MIN)) {
+      // Aún dentro del temporizador: mantener RELAY4 OFF
+      digitalWrite(RELAY4_PIN, LOW);                      // Mantener apagado
+    }
+  }
+
+  // ---- SECCIÓN: Si temperatura vuelve a subir durante el temporizador ----
+  if (tempKY >= setpoint && relay4Activo) {
+    // Reiniciar el temporizador si la temperatura alcanza el setpoint nuevamente
+    relay4Timer = millis();                               // Reiniciar contador
+    digitalWrite(RELAY4_PIN, LOW);                        // Mantener RELAY4 OFF
+    Serial.println("SETPOINT ALCANZADO NUEVAMENTE - TIMER REINICIADO"); // Debug
+  }
+
   // ---- SECCIÓN: Lectura del estado actual de los relés para mostrar en web ----
   String estadoRele1 = digitalRead(RELAY1_PIN) ? "ON" : "OFF";  // RELAY1: ON o OFF
   String estadoRele2 = digitalRead(RELAY2_PIN) ? "ON" : "OFF";  // RELAY2: ON o OFF
-  String estadoRele3String = digitalRead(RELAY3_PIN) ? "ON" : "OFF";  // RELAY3: ON o OFF - NUEVO (variable String)
+  String estadoRele3String = digitalRead(RELAY3_PIN) ? "ON" : "OFF";  // RELAY3: ON o OFF
+  String estadoRele4 = digitalRead(RELAY4_PIN) ? "ON" : "OFF";  // RELAY4: ON o OFF - NUEVO
+
+  // ---- SECCIÓN: Cálculo del tiempo restante del temporizador para mostrar en web - NUEVO ----
+  unsigned long tiempoRestante = 0;                       // Tiempo restante en milisegundos
+  if (relay4Activo && setpointAlcanzado == false && tempKY < setpoint) {
+    // Si estamos dentro del temporizador, calcular tiempo restante
+    unsigned long tiempoTranscurrido = millis() - relay4Timer;
+    if (tiempoTranscurrido < TIMER_5MIN) {
+      tiempoRestante = (TIMER_5MIN - tiempoTranscurrido) / 1000; // Convertir a segundos
+    } else {
+      tiempoRestante = 0;                                 // El timer ya expiró
+    }
+  }
 
   // =====================================================================
   // GRUPO: ACTUALIZACIÓN DE PANTALLA LCD CON ANTI-PARPADEO
@@ -429,7 +497,9 @@ void loop() {
         json += "\"modo\":" + String(modo) + ",";                 // Modo actual
         json += "\"rele1\":\"" + estadoRele1 + "\",";             // Estado RELAY1
         json += "\"rele2\":\"" + estadoRele2 + "\",";             // Estado RELAY2
-        json += "\"rele3\":\"" + estadoRele3String + "\"";        // Estado RELAY3 - NUEVO
+        json += "\"rele3\":\"" + estadoRele3String + "\",";       // Estado RELAY3
+        json += "\"rele4\":\"" + estadoRele4 + "\",";             // Estado RELAY4 - NUEVO
+        json += "\"tiempoRestante\":" + String(tiempoRestante);   // Tiempo restante del timer - NUEVO
         json += "}";                                      // Cerrar objeto JSON
 
         // ---- Envío de respuesta HTTP con JSON ----
@@ -472,7 +542,7 @@ void loop() {
       }
 
       // =====================================================================
-      // ENDPOINT: /rele3on (Encender RELAY3 manualmente) - NUEVO
+      // ENDPOINT: /rele3on (Encender RELAY3 manualmente)
       // =====================================================================
       if (req.indexOf("GET /rele3on") != -1) {
         digitalWrite(RELAY3_PIN, HIGH);                   // Establecer RELAY3 a HIGH (ON)
@@ -488,7 +558,7 @@ void loop() {
       }
 
       // =====================================================================
-      // ENDPOINT: /rele3off (Apagar RELAY3 manualmente) - NUEVO
+      // ENDPOINT: /rele3off (Apagar RELAY3 manualmente)
       // =====================================================================
       if (req.indexOf("GET /rele3off") != -1) {
         digitalWrite(RELAY3_PIN, LOW);                    // Establecer RELAY3 a LOW (OFF)
@@ -524,19 +594,30 @@ void loop() {
       pagina += "document.getElementById('modo').innerHTML = d.modo;";             // Modo
       pagina += "document.getElementById('r1').innerHTML = d.rele1;";              // Estado RELAY1
       pagina += "document.getElementById('r2').innerHTML = d.rele2;";              // Estado RELAY2
-      pagina += "document.getElementById('r3').innerHTML = d.rele3;";              // Estado RELAY3 - NUEVO
+      pagina += "document.getElementById('r3').innerHTML = d.rele3;";              // Estado RELAY3
+      pagina += "document.getElementById('r4').innerHTML = d.rele4;";              // Estado RELAY4 - NUEVO
+      pagina += "document.getElementById('timer').innerHTML = d.tiempoRestante + ' seg';"; // Timer - NUEVO
 
       // Mostrar alerta si está en MODO 3 (PRECAUCIÓN)
       pagina += "if(d.modo == 3){document.getElementById('alerta').style.display='block';}";
       pagina += "else{document.getElementById('alerta').style.display='none';}";
 
-      // Cambiar color del botón RELAY3 según su estado - NUEVO
+      // Cambiar color del botón RELAY3 según su estado
       pagina += "if(d.rele3 == 'ON'){";
       pagina += "document.getElementById('btnRele3On').style.background='#27ae60';"; // Verde si está ON
       pagina += "document.getElementById('btnRele3Off').style.background='#3498db';}"; // Azul si está OFF
       pagina += "else{";
       pagina += "document.getElementById('btnRele3On').style.background='#3498db';"; // Azul si está OFF
       pagina += "document.getElementById('btnRele3Off').style.background='#e74c3c';}"; // Rojo si está ON
+
+      // Cambiar color del indicador RELAY4 según su estado - NUEVO
+      pagina += "if(d.rele4 == 'ON'){";
+      pagina += "document.getElementById('r4').style.background='#27ae60';";       // Verde si está ON
+      pagina += "document.getElementById('r4').style.color='white';}";
+      pagina += "else{";
+      pagina += "document.getElementById('r4').style.background='#e74c3c';";       // Rojo si está OFF
+      pagina += "document.getElementById('r4').style.color='white';}";
+
       pagina += "});}";
 
       // Configurar actualización automática cada 2 segundos
@@ -546,7 +627,7 @@ void loop() {
       pagina += "function setUp(){fetch('/up');}";
       pagina += "function setDown(){fetch('/down');}";
 
-      // Funciones para controlar RELAY3 - NUEVO
+      // Funciones para controlar RELAY3
       pagina += "function rele3On(){fetch('/rele3on');}";
       pagina += "function rele3Off(){fetch('/rele3off');}";
 
@@ -560,6 +641,7 @@ void loop() {
       pagina += "button{font-size:20px;padding:10px 20px;margin:10px;border:none;border-radius:10px;background:#3498db;color:white;cursor:pointer;transition:background 0.3s;}";
       pagina += "button:hover{opacity:0.8;}";
       pagina += ".button-group{display:flex;justify-content:center;gap:10px;}";  // Para botones lado a lado
+      pagina += ".state-box{font-size:24px;font-weight:bold;padding:15px;border-radius:10px;margin:10px 0;min-height:30px;}"; // Para estados - NUEVO
       pagina += "</style></head><body>";
 
       // ---- SECCIÓN: ALERTA DE PRECAUCIÓN ----
@@ -597,13 +679,20 @@ void loop() {
       pagina += "<div class='card'><h2>SISTEMA 2 (AUTOMÁTICO)</h2>";
       pagina += "<div>Estado: <span id='r2'></span></div></div>";
 
-      // ---- SECCIÓN: CONTROL MANUAL RELAY3 (NUEVO) ----
+      // ---- SECCIÓN: CONTROL MANUAL RELAY3 ----
       pagina += "<div class='card'><h2>RELÉ MANUAL (CONTROL ON/OFF)</h2>";
       pagina += "<div>Estado: <span id='r3'></span></div>";
       pagina += "<div class='button-group'>";
       pagina += "<button id='btnRele3On' onclick='rele3On()' style='background:#27ae60;'>🟢 ENCENDER</button>";
       pagina += "<button id='btnRele3Off' onclick='rele3Off()' style='background:#e74c3c;'>🔴 APAGAR</button>";
       pagina += "</div></div>";
+
+      // ---- SECCIÓN: ESTADO RELAY4 (AUTOMÁTICO CON TEMPORIZADOR) - NUEVO ----
+      pagina += "<div class='card'><h2>RELÉ CON TEMPORIZADOR (5 MINUTOS)</h2>";
+      pagina += "<div>Estado: <span id='r4' class='state-box'></span></div>";
+      pagina += "<div>Tiempo restante: <span id='timer' class='state-box'>0 seg</span></div>";
+      pagina += "<p style='font-size:12px;color:#666;'><strong>Funcionamiento:</strong> Se apaga al alcanzar setpoint. Reaparece 5 min después si temp baja.</p>";
+      pagina += "</div>";
 
       pagina += "</body></html>";
 
