@@ -9,7 +9,7 @@
 //  - KY-013 (lectura temperatura interna) + ajuste +1°C
 //  - Relés con control IR y modos avanzados
 //  - RELAY3: Control manual ON/OFF independiente
-//  - RELAY4 (GPIO 25): Control automático con temporizador de 5 minutos - NUEVO
+//  - RELAY4 (GPIO 25): Sigue a RELAY1/2 con retraso al setpoint - NUEVO
 //  - EEPROM para persistencia de datos
 //  - LCD I2C 16x2 optimizada sin parpadeo
 //  - Control automático con HISTERESIS anti-rebote
@@ -41,7 +41,7 @@ DHTesp dht;                        // Objeto para manejar el sensor DHT
 #define RELAY1_PIN 16              // Pin GPIO 16 para el relé 1 (automático 1)
 #define RELAY2_PIN 18              // Pin GPIO 18 para el relé 2 (automático 2)
 #define RELAY3_PIN 19              // Pin GPIO 19 para el relé 3 (manual ON/OFF)
-#define RELAY4_PIN 25              // Pin GPIO 25 para el relé 4 (control con temporizador) - NUEVO
+#define RELAY4_PIN 25              // Pin GPIO 25 para el relé 4 (sigue a RELAY1/2 con retraso) - NUEVO
 
 // =====================================================================
 // GRUPO: CONFIGURACIÓN DEL RECEPTOR INFRARROJO HX1838
@@ -63,12 +63,12 @@ int estadoReles = 0;               // Almacena estado anterior de relés para EE
 int estadoRele3Int = 0;            // Estado del relé manual (0=OFF, 1=ON)
 
 // =====================================================================
-// GRUPO: VARIABLES PARA RELAY4 (Control con temporizador) - NUEVO
+// GRUPO: VARIABLES PARA RELAY4 (Sigue a RELAY1/2 con retraso) - NUEVO
 // =====================================================================
-bool relay4Activo = false;         // Flag: true si RELAY4 está en espera del temporizador
-unsigned long relay4Timer = 0;     // Timestamp del inicio del temporizador de 5 minutos
+bool relay4EnEspera = false;        // Flag: true si está esperando 5 minutos para apagar
+unsigned long relay4Timer = 0;      // Timestamp del inicio del temporizador de 5 minutos
 const unsigned long TIMER_5MIN = 300000; // 5 minutos en milisegundos (300000 ms)
-bool setpointAlcanzado = false;    // Flag: true si tempKY >= setpoint
+bool setpointAlcanzado = false;    // Flag: true si tempKY >= setpoint (inicia el contador)
 
 // =====================================================================
 // GRUPO: DIRECCIONES DE ALMACENAMIENTO EN EEPROM
@@ -111,7 +111,7 @@ int lastEstadoRele3 = -1;               // Último estado relay3 mostrado
 // =====================================================================
 // GRUPO: HISTERESIS ANTI-REBOTE
 // =====================================================================
-// La histéresis evita oscilaciones rápidas del relé cuando la temperatura está cerca del setpoint
+// La hist éresis evita oscilaciones rápidas del relé cuando la temperatura está cerca del setpoint
 const float HISTERESIS = 1.0;           // Rango de histéresis en grados Celsius
 
 // =====================================================================
@@ -352,45 +352,45 @@ void loop() {
   }
 
   // =====================================================================
-  // GRUPO: CONTROL DE RELAY4 CON TEMPORIZADOR DE 5 MINUTOS - NUEVO
+  // GRUPO: CONTROL DE RELAY4 (Sigue a RELAY1/2 con retraso de 5 min) - NUEVO
   // =====================================================================
-  // Lógica: Si tempKY >= setpoint → RELAY4 OFF inmediatamente
-  //         Si tempKY < setpoint Y relay4Activo == true → Esperar 5 min, luego RELAY4 ON
-  //         Si tempKY >= setpoint Y relay4Activo == true → Reiniciar timer
+  // Lógica: RELAY4 sigue a RELAY1 O RELAY2, PERO con 5 min de retraso al apagar
+  //         cuando se alcanza el setpoint
 
   // ---- SECCIÓN: Detectar cuando la temperatura alcanza el setpoint ----
   if (tempKY >= setpoint && !setpointAlcanzado) {
     // Primera vez que se alcanza el setpoint
     setpointAlcanzado = true;                             // Marcar que se alcanzó
-    relay4Activo = true;                                  // Iniciar secuencia del temporizador
+    relay4EnEspera = true;                                // Iniciar la espera de 5 minutos
     relay4Timer = millis();                               // Guardar tiempo del evento
-    digitalWrite(RELAY4_PIN, LOW);                        // Apagar RELAY4 inmediatamente
-    Serial.println("SETPOINT ALCANZADO - RELAY4 OFF");   // Debug
+    Serial.println("SETPOINT ALCANZADO - Iniciando temporizador 5 min");
   }
 
-  // ---- SECCIÓN: Si la temperatura vuelve a bajar del setpoint ----
+  // ---- SECCIÓN: Si la temperatura baja del setpoint ----
   if (tempKY < setpoint && setpointAlcanzado) {
     // Temperatura bajó por debajo del setpoint
     setpointAlcanzado = false;                            // Limpiar flag
-    
-    // Si aún está dentro del temporizador, esperar 5 minutos
-    if (relay4Activo && (millis() - relay4Timer >= TIMER_5MIN)) {
-      // Han pasado 5 minutos: ENCENDER RELAY4
-      digitalWrite(RELAY4_PIN, HIGH);                     // Encender RELAY4
-      relay4Activo = false;                               // Terminar secuencia
-      Serial.println("5 MINUTOS COMPLETADOS - RELAY4 ON"); // Debug
-    } else if (relay4Activo && (millis() - relay4Timer < TIMER_5MIN)) {
-      // Aún dentro del temporizador: mantener RELAY4 OFF
-      digitalWrite(RELAY4_PIN, LOW);                      // Mantener apagado
-    }
   }
 
-  // ---- SECCIÓN: Si temperatura vuelve a subir durante el temporizador ----
-  if (tempKY >= setpoint && relay4Activo) {
-    // Reiniciar el temporizador si la temperatura alcanza el setpoint nuevamente
-    relay4Timer = millis();                               // Reiniciar contador
-    digitalWrite(RELAY4_PIN, LOW);                        // Mantener RELAY4 OFF
-    Serial.println("SETPOINT ALCANZADO NUEVAMENTE - TIMER REINICIADO"); // Debug
+  // ---- SECCIÓN: Lógica principal de RELAY4 ----
+  // Si RELAY1 O RELAY2 están HIGH y NO estamos en período de espera → RELAY4 HIGH
+  if ((digitalRead(RELAY1_PIN) || digitalRead(RELAY2_PIN)) && !relay4EnEspera) {
+    digitalWrite(RELAY4_PIN, HIGH);                       // Encender RELAY4
+  } else {
+    // Si estamos en período de espera (temporizador activo)
+    if (relay4EnEspera) {
+      // Verificar si han pasado 5 minutos
+      if (millis() - relay4Timer >= TIMER_5MIN) {
+        // Han pasado 5 minutos: Apagar RELAY4 y terminar espera
+        digitalWrite(RELAY4_PIN, LOW);                    // Apagar RELAY4
+        relay4EnEspera = false;                           // Terminar período de espera
+        Serial.println("5 MINUTOS COMPLETADOS - RELAY4 OFF");
+      }
+      // Mientras el temporizador está activo, RELAY4 permanece HIGH (sigue a RELAY1/2)
+    } else if (!relay4EnEspera && !(digitalRead(RELAY1_PIN) || digitalRead(RELAY2_PIN))) {
+      // Si no estamos en espera Y RELAY1/2 están OFF → RELAY4 OFF
+      digitalWrite(RELAY4_PIN, LOW);                      // Apagar RELAY4
+    }
   }
 
   // ---- SECCIÓN: Lectura del estado actual de los relés para mostrar en web ----
@@ -400,8 +400,8 @@ void loop() {
   String estadoRele4 = digitalRead(RELAY4_PIN) ? "ON" : "OFF";  // RELAY4: ON o OFF - NUEVO
 
   // ---- SECCIÓN: Cálculo del tiempo restante del temporizador para mostrar en web - NUEVO ----
-  unsigned long tiempoRestante = 0;                       // Tiempo restante en milisegundos
-  if (relay4Activo && setpointAlcanzado == false && tempKY < setpoint) {
+  unsigned long tiempoRestante = 0;                       // Tiempo restante en segundos
+  if (relay4EnEspera && setpointAlcanzado == false) {
     // Si estamos dentro del temporizador, calcular tiempo restante
     unsigned long tiempoTranscurrido = millis() - relay4Timer;
     if (tiempoTranscurrido < TIMER_5MIN) {
@@ -641,7 +641,7 @@ void loop() {
       pagina += "button{font-size:20px;padding:10px 20px;margin:10px;border:none;border-radius:10px;background:#3498db;color:white;cursor:pointer;transition:background 0.3s;}";
       pagina += "button:hover{opacity:0.8;}";
       pagina += ".button-group{display:flex;justify-content:center;gap:10px;}";  // Para botones lado a lado
-      pagina += ".state-box{font-size:24px;font-weight:bold;padding:15px;border-radius:10px;margin:10px 0;min-height:30px;}"; // Para estados - NUEVO
+      pagina += ".state-box{font-size:24px;font-weight:bold;padding:15px;border-radius:10px;margin:10px 0;min-height:30px;}"; // Para estados
       pagina += "</style></head><body>";
 
       // ---- SECCIÓN: ALERTA DE PRECAUCIÓN ----
@@ -688,10 +688,10 @@ void loop() {
       pagina += "</div></div>";
 
       // ---- SECCIÓN: ESTADO RELAY4 (AUTOMÁTICO CON TEMPORIZADOR) - NUEVO ----
-      pagina += "<div class='card'><h2>RELÉ CON TEMPORIZADOR (5 MINUTOS)</h2>";
+      pagina += "<div class='card'><h2>RELÉ AUTOMÁTICO CON RETRASO (5 MINUTOS)</h2>";
       pagina += "<div>Estado: <span id='r4' class='state-box'></span></div>";
       pagina += "<div>Tiempo restante: <span id='timer' class='state-box'>0 seg</span></div>";
-      pagina += "<p style='font-size:12px;color:#666;'><strong>Funcionamiento:</strong> Se apaga al alcanzar setpoint. Reaparece 5 min después si temp baja.</p>";
+      pagina += "<p style='font-size:12px;color:#666;'><strong>Funcionamiento:</strong> Sigue a RELAY1/2. Al alcanzar setpoint, espera 5 min antes de apagar.</p>";
       pagina += "</div>";
 
       pagina += "</body></html>";
