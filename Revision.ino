@@ -28,8 +28,8 @@ DHTesp dhtInterior;
 
 #define RELAY1_PIN 16
 #define RELAY2_PIN 18
-#define RELAY3_PIN 25              // Relay manual movido a GPIO25
-#define RELAY4_PIN 19              // Relay4 ahora en GPIO19
+#define RELAY3_PIN 25
+#define RELAY4_PIN 19
 
 #define IR_PIN 23
 LiquidCrystal_I2C lcd(0x27, 16, 2);
@@ -132,7 +132,6 @@ void setup() {
 }
 
 void loop() {
-  // 1) Lectura sensores independiente de WiFi
   if (millis() - lastDHTRead >= DHT_READ_INTERVAL) {
     float tExt = dhtExterior.getTemperature();
     float hExt = dhtExterior.getHumidity();
@@ -151,7 +150,6 @@ void loop() {
     lastDHTRead = millis();
   }
 
-  // 2) IR independiente de WiFi
   if (IrReceiver.decode()) {
     unsigned long rawCode = IrReceiver.decodedIRData.decodedRawData;
     uint8_t command = IrReceiver.decodedIRData.command;
@@ -166,15 +164,18 @@ void loop() {
       EEPROM.writeInt(addrSetpoint, setpoint);
       EEPROM.commit();
     }
-    if (command == 0x45) {
-      modo = 1;
-      EEPROM.writeInt(addrModo, modo);
+    if (rawCode == 0xBA45FF00) {
+      setpoint = 0;
+      EEPROM.writeInt(addrSetpoint, setpoint);
       EEPROM.commit();
-      digitalWrite(RELAY1_PIN, LOW);
-      digitalWrite(RELAY2_PIN, LOW);
     }
     if (rawCode == 0xB946FF00) {
-      modo = 2;
+      setpoint = 23;
+      EEPROM.writeInt(addrSetpoint, setpoint);
+      EEPROM.commit();
+    }
+    if (command == 0x45) {
+      modo = 1;
       EEPROM.writeInt(addrModo, modo);
       EEPROM.commit();
       digitalWrite(RELAY1_PIN, LOW);
@@ -190,7 +191,6 @@ void loop() {
     IrReceiver.resume();
   }
 
-  // 3) Control relés 1/2 SIEMPRE activo
   if (modo == 1) {
     if (digitalRead(RELAY1_PIN)) {
       if (tempInterior >= setpoint + HISTERESIS) digitalWrite(RELAY1_PIN, LOW);
@@ -223,7 +223,6 @@ void loop() {
     }
   }
 
-  // 4) Control RELAY4 robusto y totalmente independiente de web
   bool relay1O2Activos = (digitalRead(RELAY1_PIN) || digitalRead(RELAY2_PIN));
 
   if (relay1O2Activos) {
@@ -239,7 +238,7 @@ void loop() {
 
     if (relay4EnEspera) {
       if (millis() - relay4Timer >= TIMER_5MIN) {
-        digitalWrite(RELAY4_PIN, LOW);   // apagado definitivo al terminar el conteo
+        digitalWrite(RELAY4_PIN, LOW);
         relay4EnEspera = false;
       } else {
         digitalWrite(RELAY4_PIN, HIGH);
@@ -249,7 +248,6 @@ void loop() {
     }
   }
 
-  // Estados para LCD/Web
   String estadoRele1 = digitalRead(RELAY1_PIN) ? "ON" : "OFF";
   String estadoRele2 = digitalRead(RELAY2_PIN) ? "ON" : "OFF";
   String estadoRele3String = digitalRead(RELAY3_PIN) ? "ON" : "OFF";
@@ -263,7 +261,6 @@ void loop() {
     }
   }
 
-  // LCD
   if (tempExterior != lastTemp) {
     lcd.setCursor(0,0);
     lcd.print("EXT:");
@@ -307,7 +304,6 @@ void loop() {
     else lcd.print("            ");
   }
 
-  // 5) Web al final, sin afectar control
   if (WiFi.status() == WL_CONNECTED) {
     WiFiClient client = server.available();
     if (client && client.connected()) {
@@ -356,6 +352,24 @@ void loop() {
         return;
       }
 
+      if (req.indexOf("GET /sp0") != -1) {
+        setpoint = 0;
+        EEPROM.writeInt(addrSetpoint, setpoint);
+        EEPROM.commit();
+        client.println("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nOK");
+        client.stop();
+        return;
+      }
+
+      if (req.indexOf("GET /sp23") != -1) {
+        setpoint = 23;
+        EEPROM.writeInt(addrSetpoint, setpoint);
+        EEPROM.commit();
+        client.println("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nOK");
+        client.stop();
+        return;
+      }
+
       if (req.indexOf("GET /rele3on") != -1) {
         digitalWrite(RELAY3_PIN, HIGH);
         estadoRele3Int = 1;
@@ -395,6 +409,7 @@ void loop() {
       pagina += "});}";
       pagina += "setInterval(actualizar,2000);";
       pagina += "function setUp(){fetch('/up');} function setDown(){fetch('/down');}";
+      pagina += "function setSp0(){fetch('/sp0');} function setSp23(){fetch('/sp23');}";
       pagina += "function rele3On(){fetch('/rele3on');} function rele3Off(){fetch('/rele3off');}";
       pagina += "</script>";
       pagina += "<style>body{font-family:Segoe UI;text-align:center;background:#f7f9fc;color:#333;}";
@@ -406,7 +421,7 @@ void loop() {
       pagina += "<h1>SISTEMA CALEFACTOR</h1>";
       pagina += "<div class='card'><h2>TEMPERATURA EXTERIOR</h2><div>TEMPERATURA: <span id='temp'></span> °C</div><div>HUMEDAD: <span id='hum'></span> %</div></div>";
       pagina += "<div class='card'><h2>TEMPERATURA INTERIOR</h2><div>TEMPERATURA: <span id='tempInt'></span> °C</div><div>HUMEDAD: <span id='humInt'></span> %</div></div>";
-      pagina += "<div class='card'><h2>SETPOINT</h2><div>Valor: <span id='setp'></span> °C</div><button onclick='setUp()'>▲ AUMENTAR</button><button onclick='setDown()'>▼ DISMINUIR</button></div>";
+      pagina += "<div class='card'><h2>SETPOINT</h2><div>Valor: <span id='setp'></span> °C</div><button onclick='setUp()'>▲ AUMENTAR</button><button onclick='setDown()'>▼ DISMINUIR</button><button onclick='setSp0()'>OFF 0°C</button><button onclick='setSp23()'>CONFORT 23°C</button></div>";
       pagina += "<div class='card'><h2>OPERANDO</h2><div>Modo actual: <span id='modo'></span></div></div>";
       pagina += "<div class='card'><h2>SISTEMA 1 (AUTOMÁTICO)</h2><div>Estado: <span id='r1'></span></div></div>";
       pagina += "<div class='card'><h2>SISTEMA 2 (AUTOMÁTICO)</h2><div>Estado: <span id='r2'></span></div></div>";
