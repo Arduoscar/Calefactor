@@ -77,6 +77,28 @@ float humExterior = 0;
 unsigned long lastDHTRead = 0;
 const unsigned long DHT_READ_INTERVAL = 2000;
 
+void guardarSetpoint() {
+  EEPROM.writeInt(addrSetpoint, setpoint);
+  EEPROM.commit();
+}
+
+void guardarModo() {
+  EEPROM.writeInt(addrModo, modo);
+  EEPROM.commit();
+}
+
+void apagarSistemasAutomaticos() {
+  digitalWrite(RELAY1_PIN, LOW);
+  digitalWrite(RELAY2_PIN, LOW);
+}
+
+void imprimirCodigoIR(unsigned long rawCode, uint8_t command) {
+  Serial.print("IR RAW: 0x");
+  Serial.print(rawCode, HEX);
+  Serial.print(" | CMD: 0x");
+  Serial.println(command, HEX);
+}
+
 void setup() {
   Serial.begin(115200);
   EEPROM.begin(64);
@@ -104,6 +126,10 @@ void setup() {
   digitalWrite(RELAY3_PIN, LOW);
   digitalWrite(RELAY4_PIN, LOW);
 
+  if (estadoRele3Int == 1) {
+    digitalWrite(RELAY3_PIN, HIGH);
+  }
+
   IrReceiver.begin(IR_PIN, ENABLE_LED_FEEDBACK);
 
   lcd.init();
@@ -129,6 +155,8 @@ void setup() {
   } else {
     Serial.println("\nWiFi NO disponible (control local activo)");
   }
+
+  Serial.println("Monitor IR listo. Presiona cualquier tecla del control para ver RAW y CMD.");
 }
 
 void loop() {
@@ -154,47 +182,49 @@ void loop() {
     unsigned long rawCode = IrReceiver.decodedIRData.decodedRawData;
     uint8_t command = IrReceiver.decodedIRData.command;
 
+    imprimirCodigoIR(rawCode, command);
+
     if (rawCode == 0xE718FF00) {
       setpoint++;
-      EEPROM.writeInt(addrSetpoint, setpoint);
-      EEPROM.commit();
+      guardarSetpoint();
+      Serial.print("SETPOINT aumentado a: ");
+      Serial.println(setpoint);
     }
-    if (rawCode == 0xAD52FF00) {
+    else if (rawCode == 0xAD52FF00) {
       setpoint--;
-      EEPROM.writeInt(addrSetpoint, setpoint);
-      EEPROM.commit();
+      guardarSetpoint();
+      Serial.print("SETPOINT disminuido a: ");
+      Serial.println(setpoint);
     }
-    if (rawCode == 0xBA45FF00) {
-      setpoint = 0;
-      EEPROM.writeInt(addrSetpoint, setpoint);
-      EEPROM.commit();
-    }
-    if (rawCode == 0xB946FF00) {
-      setpoint = 23;
-      EEPROM.writeInt(addrSetpoint, setpoint);
-      EEPROM.commit();
-    }
-    if (command == 0x45) {
+    else if (rawCode == 0xBA45FF00) {
       modo = 1;
-      EEPROM.writeInt(addrModo, modo);
-      EEPROM.commit();
-      digitalWrite(RELAY1_PIN, LOW);
-      digitalWrite(RELAY2_PIN, LOW);
+      guardarModo();
+      apagarSistemasAutomaticos();
+      Serial.println("MODO 1 activado");
     }
-    if (rawCode == 0xB946FF00) {
+    else if (rawCode == 0xB946FF00) {
       modo = 2;
-      EEPROM.writeInt(addrModo, modo);
-      EEPROM.commit();
-      digitalWrite(RELAY1_PIN, LOW);
-      digitalWrite(RELAY2_PIN, LOW);
+      guardarModo();
+      apagarSistemasAutomaticos();
+      Serial.println("MODO 2 activado");
     }
-    if (rawCode == 0xB847FF00) {
+    else if (rawCode == 0xB847FF00) {
       modo = 3;
-      EEPROM.writeInt(addrModo, modo);
-      EEPROM.commit();
-      digitalWrite(RELAY1_PIN, LOW);
-      digitalWrite(RELAY2_PIN, LOW);
+      guardarModo();
+      apagarSistemasAutomaticos();
+      Serial.println("MODO 3 activado");
     }
+    else if (command == 0x45) {
+      setpoint = 0;
+      guardarSetpoint();
+      Serial.println("SETPOINT fijado a 0");
+    }
+    else if (command == 0x46) {
+      setpoint = 23;
+      guardarSetpoint();
+      Serial.println("SETPOINT fijado a 23");
+    }
+
     IrReceiver.resume();
   }
 
@@ -343,8 +373,7 @@ void loop() {
 
       if (req.indexOf("GET /up") != -1) {
         setpoint++;
-        EEPROM.writeInt(addrSetpoint, setpoint);
-        EEPROM.commit();
+        guardarSetpoint();
         client.println("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nOK");
         client.stop();
         return;
@@ -352,8 +381,7 @@ void loop() {
 
       if (req.indexOf("GET /down") != -1) {
         setpoint--;
-        EEPROM.writeInt(addrSetpoint, setpoint);
-        EEPROM.commit();
+        guardarSetpoint();
         client.println("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nOK");
         client.stop();
         return;
@@ -361,8 +389,7 @@ void loop() {
 
       if (req.indexOf("GET /sp0") != -1) {
         setpoint = 0;
-        EEPROM.writeInt(addrSetpoint, setpoint);
-        EEPROM.commit();
+        guardarSetpoint();
         client.println("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nOK");
         client.stop();
         return;
@@ -370,8 +397,7 @@ void loop() {
 
       if (req.indexOf("GET /sp23") != -1) {
         setpoint = 23;
-        EEPROM.writeInt(addrSetpoint, setpoint);
-        EEPROM.commit();
+        guardarSetpoint();
         client.println("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nOK");
         client.stop();
         return;
@@ -426,7 +452,7 @@ void loop() {
       pagina += "</style></head><body>";
       pagina += "<div id='alerta' class='alerta'>⚠ PRECAUCION EXCESO DE POTENCIA ⚠</div>";
       pagina += "<h1>SISTEMA CALEFACTOR</h1>";
-      pagina += "<div class='card'><h2>SETPOINT</h2><div>Valor: <span id='setp'></span> °C</div><button onclick='setUp()'>▲ AUMENTAR</button><button onclick='setDown()'>▼ DISMINUIR</button><button onclick='setSp0()'>OFF 0°C</button><button onclick='setSp23()'>CONFORT 23°C</button></div>";
+      pagina += "<div class='card'><h2>SETPOINT</h2><div>Valor: <span id='setp'></span> °C</div><button onclick='setUp()'>▲ AUMENTAR</button><button onclick='setDown()'>▼ DISMINUIR</button><button onclick='setSp0()'>SETPOINT 0</button><button onclick='setSp23()'>SETPOINT 23</button></div>";
       pagina += "<div class='card'><h2>TEMPERATURA EXTERIOR</h2><div>TEMPERATURA: <span id='temp'></span> °C</div><div>HUMEDAD: <span id='hum'></span> %</div></div>";
       pagina += "<div class='card'><h2>TEMPERATURA INTERIOR</h2><div>TEMPERATURA: <span id='tempInt'></span> °C</div><div>HUMEDAD: <span id='humInt'></span> %</div></div>";
       pagina += "<div class='card'><h2>OPERANDO</h2><div>MODO: <span id='modo'></span></div></div>";
