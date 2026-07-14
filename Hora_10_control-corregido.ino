@@ -66,6 +66,7 @@ int lastModo = -1;
 int lastSetpoint = -1;
 
 const float HISTERESIS = 1.0;
+const float OFFSET_TEMP_INTERIOR = -2.0;
 unsigned long lastBlink = 0;
 bool blinkState = false;
 
@@ -165,6 +166,8 @@ void loop() {
     float hExt = dhtExterior.getHumidity();
     float tInt = dhtInterior.getTemperature();
     float hInt = dhtInterior.getHumidity();
+
+    if (!isnan(tInt)) tInt += OFFSET_TEMP_INTERIOR;
 
     if (!isnan(tExt)) tempExterior = tExt;
     if (!isnan(hExt)) humExterior = hExt;
@@ -452,7 +455,7 @@ void loop() {
       pagina += "</style></head><body>";
       pagina += "<div id='alerta' class='alerta'>⚠ PRECAUCION EXCESO DE POTENCIA ⚠</div>";
       pagina += "<h1>SISTEMA CALEFACTOR</h1>";
-      pagina += "<div class='card'><h2>SETPOINT</h2><div>Valor: <span id='setp'></span> °C</div><button onclick='setUp()'>▲ AUMENTAR</button><button onclick='setDown()'>▼ DISMINUIR</button><button onclick='setSp0()'>SETPOINT 0</button><button onclick='setSp23()'>SETPOINT 23</button></div>";
+      pagina += "<div class='card'><h2>SETPOINT</h2><div>Valor: <span id='setp'></span> °C</div><button onclick='setUp()'>▲ AUMENTAR</button><button onclick='setDown()'>▼ DISMINUIR</button><button onclick='setSp0()'>0 °C</button><button onclick='setSp23()'>23 °C</button></div>";
       pagina += "<div class='card'><h2>TEMPERATURA EXTERIOR</h2><div>TEMPERATURA: <span id='temp'></span> °C</div><div>HUMEDAD: <span id='hum'></span> %</div></div>";
       pagina += "<div class='card'><h2>TEMPERATURA INTERIOR</h2><div>TEMPERATURA: <span id='tempInt'></span> °C</div><div>HUMEDAD: <span id='humInt'></span> %</div></div>";
       pagina += "<div class='card'><h2>OPERANDO</h2><div>MODO: <span id='modo'></span></div></div>";
