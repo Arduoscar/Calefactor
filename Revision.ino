@@ -28,7 +28,7 @@
 // GRUPO: CONFIGURACIÓN DE LOS SENSORES DHT11
 // =====================================================================
 #define DHT_EXTERIOR_PIN 17        // Pin GPIO 17 del ESP32 para el DHT11 exterior
-#define DHT_INTERIOR_PIN 14        // Pin GPIO 14 del ESP32 para el DHT11 interior
+#define DHT_INTERIOR_PIN 26        // Pin GPIO 26 del ESP32 para el DHT11 interior
 DHTesp dhtExterior;                // Objeto para manejar el sensor DHT exterior
 DHTesp dhtInterior;                // Objeto para manejar el sensor DHT interior
 
@@ -205,7 +205,7 @@ void loop() {
     if (!isnan(hInt)) humInterior = hInt;
 
     if (isnan(tInt) || isnan(hInt)) {
-      Serial.println("DHT11 interior (GPIO14) lectura inválida (NaN)");
+      Serial.println("DHT11 interior (GPIO26) lectura inválida (NaN)");
     }
 
     lastDHTRead = millis();
