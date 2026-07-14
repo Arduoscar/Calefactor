@@ -293,6 +293,15 @@ void loop() {
       apagarSistemasAutomaticos();            // Reinicia relés automáticos
       Serial.println("MODO 3 activado");
     }
+    // Nueva tecla IR para encender/apagar la luz interna desde el mando
+    else if (rawCode == 0xE31CFF00) {
+      estadoRele3Int = !estadoRele3Int;       // Invierte el estado actual de RELAY3
+      digitalWrite(RELAY3_PIN, estadoRele3Int ? HIGH : LOW); // Aplica el nuevo estado al relé
+      EEPROM.writeInt(addrRele3, estadoRele3Int); // Guarda el nuevo estado en EEPROM
+      EEPROM.commit();                        // Confirma la escritura persistente
+      Serial.print("LUZ INTERNA RELAY3: ");
+      Serial.println(estadoRele3Int ? "ON" : "OFF"); // Informa si quedó encendida o apagada
+    }
     else if (command == 0x16) {
       setpoint = 0;                           // Establece setpoint en 0
       guardarSetpoint();                      // Guarda en EEPROM
@@ -557,13 +566,13 @@ void loop() {
       pagina += "</script>";                                                 // Fin del JavaScript
       pagina += "<style>body{font-family:Segoe UI;text-align:center;background:#f7f9fc;color:#333;}"; // Estilo general
       pagina += ".card{background:#e3f2fd;padding:20px;margin:20px;box-shadow:0 5px 10px rgba(0,0,0,0.1);border-radius:10px;}"; // Tarjetas
-      pagina += ".alerta{width:100%;color:#ff0000;font-size:2em;font-weight:bold;background:#ffe6e6;padding:20px;border-radius:10px;box-shadow:0 0 10px red;margin-bottom:20px;display:none;}"; // Alerta modo 3
+      pagina += ".alerta{width:100%;color:#ff0000;font-size:2em;font-weight:bold;background:#ffe6e6;padding:20px;border-radius:10px;box-shadow:0 0 10px red;margin-bottom:20px;display:none;}"; // Alerta visual
       pagina += ".setpoint-valor{font-size:3.2em;font-weight:bold;color:#0d47a1;margin:15px 0;}"; // Setpoint más grande y visible
       pagina += "button{font-size:20px;padding:10px 20px;margin:10px;border:none;border-radius:10px;background:#3498db;color:white;cursor:pointer;}"; // Botones
       pagina += "</style></head><body>";                                     // Fin de head e inicio body
       pagina += "<div id='alerta' class='alerta'>⚠ PRECAUCION EXCESO DE POTENCIA ⚠</div>"; // Banner de advertencia
       pagina += "<h1>SISTEMA CALEFACTOR</h1>";                               // Título principal
-      pagina += "<div class='card'><h2>SETPOINT</h2><div class='setpoint-valor'><span id='setp'></span> °C</div><button onclick='setUp()'>▲ AUMENTAR</button><button onclick='setDown()'>▼ DISMINUIR</button><button onclick='setSp0()'>SET 0</button><button onclick='setSp23()'>SET 23</button></div>"; // Tarjeta de setpoint ampliada
+      pagina += "<div class='card'><h2>SETPOINT</h2><div class='setpoint-valor'><span id='setp'></span> °C</div><button onclick='setUp()'>▲ AUMENTAR</button><button onclick='setDown()'>▼ DISMINUIR</button><button onclick='setSp0()'>0°C</button><button onclick='setSp23()'>23°C</button></div>"; // Tarjeta de control del setpoint
       pagina += "<div class='card'><h2>TEMPERATURA EXTERIOR</h2><div>TEMPERATURA: <span id='temp'></span> °C</div><div>HUMEDAD: <span id='hum'></span> %</div></div>"; // Tarjeta exterior
       pagina += "<div class='card'><h2>TEMPERATURA INTERIOR</h2><div>TEMPERATURA: <span id='tempInt'></span> °C</div><div>HUMEDAD: <span id='humInt'></span> %</div></div>"; // Tarjeta interior
       pagina += "<div class='card'><h2>OPERANDO</h2><div>MODO: <span id='modo'></span></div></div>"; // Tarjeta modo
